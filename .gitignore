@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+
+# 試用工具時產生的場景地圖（工作區，不進版本控制）
+maps/
