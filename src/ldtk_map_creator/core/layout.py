@@ -1,0 +1,330 @@
+"""配置器：照規則算出每個元素佔哪些格、錨點在哪（D-007）。只做計算，不碰場景地圖。
+
+- 排列順序：先排固定位置的區域（照檔案順序）；再排指向的東西都排好了的元素，
+  路徑優先，同種照檔案順序；entity 最後擺。
+- 每個元素用 seed 加自己的名字當亂數種子；改一個元素，其他元素的亂數不受影響。
+- 靠近別人的區域跟其他區域至少隔 1 格（彼此靠近的兩個除外）；固定位置的區域只檢查不重疊；
+  跟路徑只要不重疊。
+- 排不下一律丟 SceneError，訊息開頭是出錯的元素與欄位。
+"""
+
+import random
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+from .errors import SceneError
+from .rules import EDGE, AreaRule, Cell, PathRule, Rules, Side, references
+
+Rect = tuple[int, int, int, int]  # x, y, 寬, 高（格）
+Placeable = AreaRule | PathRule
+_SIDE_NAMES: dict[str, str] = {"north": "北", "east": "東", "south": "南", "west": "西"}
+
+
+@dataclass(frozen=True)
+class Layout:
+    """配置結果。"""
+
+    # 區域與路徑佔的格，照排列順序
+    cells: dict[str, frozenset[Cell]]
+    # 錨點，例如 `main_road.end`
+    anchors: dict[str, Cell]
+    # entity 擺在哪一格
+    entities: dict[str, Cell]
+    # 每個元素找位置時，被哪些元素擋過
+    pushed_by: dict[str, frozenset[str]]
+
+
+def placement_order(rules: Rules) -> tuple[Placeable, ...]:
+    """區域與路徑的排列順序；只看規則，不看位置。"""
+    fixed: list[Placeable] = [a for a in rules.areas if a.at is not None]
+    rest: list[Placeable] = [*rules.paths, *(a for a in rules.areas if a.at is None)]
+    order = list(fixed)
+    placed = {e.name for e in fixed}
+    while rest:
+        # 從規則檔讀進來的不會成環；直接組出來的 Rules 可能會，照樣報成 SceneError
+        ready = next((e for e in rest if {r for r, _ in references(e)} <= placed), None)
+        if ready is None:
+            stuck = rest[0]
+            ref, field = next((r, f) for r, f in references(stuck) if r not in placed)
+            known = {e.name for e in (*rules.areas, *rules.paths)}
+            reason = "元素互相指向成環，排不出來" if ref in known else f"沒有叫 {ref} 的區域或路徑"
+            raise SceneError(f"{stuck.name}.{field}：{reason}")
+        rest.remove(ready)
+        order.append(ready)
+        placed.add(ready.name)
+    return tuple(order)
+
+
+def layout(rules: Rules) -> Layout:
+    """照規則排出每個元素；排不下丟 SceneError。"""
+    grid = _Grid(*rules.level_size)
+    anchors: dict[str, Cell] = {}
+    pushed_by: dict[str, frozenset[str]] = {}
+    for element in placement_order(rules):
+        rng = random.Random(f"{rules.seed}:{element.name}")
+        if isinstance(element, AreaRule):
+            rect, pushed = _place_area(element, grid, rng)
+            cells = _rect_cells(rect)
+            anchors[f"{element.name}.center"] = _center(rect)
+            grid.areas.add(element.name)
+        else:
+            cells, start, end, pushed = _place_path(element, grid, rng)
+            anchors[f"{element.name}.start"] = start
+            anchors[f"{element.name}.end"] = end
+        grid.claim(element.name, cells)
+        pushed_by[element.name] = frozenset(pushed)
+
+    entities: dict[str, Cell] = {}
+    taken: dict[Cell, str] = {}
+    for entity in rules.entities:
+        if isinstance(entity.at, tuple):
+            cell = entity.at
+        elif entity.at in anchors:
+            cell = anchors[entity.at]
+        else:
+            raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
+        if cell in taken:
+            raise SceneError(f"{entity.name}.at：跟 {taken[cell]} 擺在同一格 {cell}")
+        taken[cell] = entity.name
+        entities[entity.name] = cell
+        pushed_by[entity.name] = frozenset()
+    return Layout(dict(grid.cells), anchors, entities, pushed_by)
+
+
+class _Grid:
+    """level 上每一格被哪個元素佔了。"""
+
+    def __init__(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+        self.owner: dict[Cell, str] = {}
+        self.cells: dict[str, frozenset[Cell]] = {}
+        self.areas: set[str] = set()
+
+    def claim(self, name: str, cells: frozenset[Cell]) -> None:
+        self.cells[name] = cells
+        for cell in cells:
+            self.owner[cell] = name
+
+    def inside(self, rect: Rect) -> bool:
+        x, y, w, h = rect
+        return x >= 0 and y >= 0 and x + w <= self.width and y + h <= self.height
+
+    def owners(self, cells: Iterable[Cell]) -> set[str]:
+        return {self.owner[c] for c in cells if c in self.owner}
+
+    def bbox(self, name: str) -> Rect:
+        xs = [x for x, _ in self.cells[name]]
+        ys = [y for _, y in self.cells[name]]
+        return min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+
+
+def _rect_cells(rect: Rect) -> frozenset[Cell]:
+    x, y, w, h = rect
+    return frozenset((cx, cy) for cy in range(y, y + h) for cx in range(x, x + w))
+
+
+def _center(rect: Rect) -> Cell:
+    return rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
+
+
+# 區域 ----------------------------------------------------------------------
+
+
+def _place_area(area: AreaRule, grid: _Grid, rng: random.Random) -> tuple[Rect, set[str]]:
+    w, h = area.size
+    if area.at is not None:
+        if area.at == "center":
+            rect = ((grid.width - w) // 2, (grid.height - h) // 2, w, h)
+        else:
+            rect = (area.at[0], area.at[1], w, h)
+        hit = grid.owners(_rect_cells(rect))
+        if hit:
+            raise SceneError(f"{area.name}.at：跟 {'、'.join(sorted(hit))} 重疊")
+        return rect, set()
+
+    if area.near is None:
+        raise SceneError(f"{area.name}.at：at 與 near 要剛好寫一個")
+    target = grid.cells[area.near]
+    gap = area.gap
+    every: list[Side] = ["north", "east", "south", "west"]
+    sides: list[Side] = [area.side] if area.side else rng.sample(every, 4)
+    pushed: set[str] = set()
+    for side in sides:
+        spots = _near_spots(target, (w, h), gap, side)
+        rng.shuffle(spots)
+        for x, y in spots:
+            rect = (x, y, w, h)
+            if not grid.inside(rect):
+                continue
+            blockers = _area_blockers(rect, grid, area.near)
+            if blockers:
+                pushed |= blockers
+                continue
+            return rect, pushed
+    where = f"{area.near} 的{_SIDE_NAMES[area.side]}邊" if area.side else f"{area.near} 旁邊"
+    raise SceneError(f"{area.name}.near：在 {where}排不下 {w}x{h}（gap {gap}）")
+
+
+def _near_spots(target: frozenset[Cell], size: Cell, gap: int, side: Side) -> list[Cell]:
+    """在對象的某一邊、剛好隔 gap 格的位置（左上角），照座標排好。
+
+    看對象實際佔的格，不看外框：L 形路徑旁邊也排得進去。
+    """
+    w, h = size
+    spots: set[Cell] = set()
+    for cx, cy in target:
+        if side == "north":
+            spots.update((x, cy - gap - h) for x in range(cx - w + 1, cx + 1))
+        elif side == "south":
+            spots.update((x, cy + gap + 1) for x in range(cx - w + 1, cx + 1))
+        elif side == "west":
+            spots.update((cx - gap - w, y) for y in range(cy - h + 1, cy + 1))
+        else:
+            spots.update((cx + gap + 1, y) for y in range(cy - h + 1, cy + 1))
+
+    def clear(x: int, y: int) -> bool:
+        # 區域四周 gap 格內都不能碰到對象：L 形的對象可能從別的方向更靠近
+        return not _rect_cells((x - gap, y - gap, w + 2 * gap, h + 2 * gap)) & target
+
+    return sorted(s for s in spots if clear(*s))
+
+
+def _area_blockers(rect: Rect, grid: _Grid, target: str) -> set[str]:
+    """跟候選位置重疊的元素，加上外圍一格內的其他區域（靠近的對象不算）。"""
+    x, y, w, h = rect
+    blockers = grid.owners(_rect_cells(rect))
+    ring = _rect_cells((x - 1, y - 1, w + 2, h + 2)) - _rect_cells(rect)
+    blockers |= {o for o in grid.owners(ring) if o in grid.areas and o != target}
+    return blockers
+
+
+# 路徑 ----------------------------------------------------------------------
+
+
+def _place_path(
+    path: PathRule, grid: _Grid, rng: random.Random
+) -> tuple[frozenset[Cell], Cell, Cell, set[str]]:
+    if path.to.startswith(EDGE):
+        return _edge_path(path, grid)
+    return _link_path(path, grid, rng)
+
+
+def _edge_path(path: PathRule, grid: _Grid) -> tuple[frozenset[Cell], Cell, Cell, set[str]]:
+    """從起點佔的格筆直通到 level 的一邊；優先對齊起點的中央，被擋就往旁邊挪。
+
+    座標換成「順著路」與「橫過路」兩軸：南北向的路順著 y，東西向的順著 x。
+    """
+    side = path.to.removeprefix(EDGE)
+    vertical = side in ("north", "south")
+    forward = side in ("south", "east")
+
+    def pos(along: int, across: int) -> Cell:
+        return (across, along) if vertical else (along, across)
+
+    along_limit = grid.height if vertical else grid.width
+    across_limit = grid.width if vertical else grid.height
+    # 起點在橫軸每一格上，順軸佔到哪些位置
+    by_across: dict[int, list[int]] = {}
+    for x, y in grid.cells[path.start]:
+        along, across = (y, x) if vertical else (x, y)
+        by_across.setdefault(across, []).append(along)
+    low, high = min(by_across), max(by_across)
+    middle = (low + high + 1) / 2
+    wd = path.width
+    offsets = range(max(0, low - wd + 1), min(across_limit - wd, high) + 1)
+    pushed: set[str] = set()
+    room = False
+    for offset in sorted(offsets, key=lambda o: (abs(o + wd / 2 - middle), o)):
+        alongs = [a for c in range(offset, offset + wd) for a in by_across.get(c, [])]
+        if not alongs:
+            continue
+        begin, stop = (max(alongs) + 1, along_limit) if forward else (0, min(alongs))
+        if begin >= stop:
+            continue
+        room = True
+        cells = frozenset(pos(a, c) for a in range(begin, stop) for c in range(offset, offset + wd))
+        blockers = grid.owners(cells)
+        if blockers:
+            pushed |= blockers
+            continue
+        line = offset + wd // 2
+        near, far = (begin, stop - 1) if forward else (stop - 1, begin)
+        return cells, pos(near, line), pos(far, line), pushed
+    edge = _SIDE_NAMES[side]
+    if not room:
+        raise SceneError(f"{path.name}.to：{path.start} 已經貼著 level 的{edge}邊")
+    blocked = "、".join(sorted(pushed))
+    raise SceneError(f"{path.name}.to：從 {path.start} 到{edge}邊的路都被 {blocked} 擋住")
+
+
+def _link_path(
+    path: PathRule, grid: _Grid, rng: random.Random
+) -> tuple[frozenset[Cell], Cell, Cell, set[str]]:
+    """L 形：從起點的中心走到終點的中心，先橫後直或先直後橫，用自己的亂數決定先試哪一種。"""
+    a = _middle_cell(grid, path.start)
+    b = _middle_cell(grid, path.to)
+    ends = grid.cells[path.start] | grid.cells[path.to]
+    shapes = ["hv", "vh"]
+    rng.shuffle(shapes)
+    pushed: set[str] = set()
+    for shape in shapes:
+        segment = _between(_l_line(a, b, shape), grid.cells[path.start], grid.cells[path.to])
+        if not segment:
+            continue  # 這種形狀整條落在兩端裡，換另一種
+        # 只加寬兩端之間的那段中線，路才不會繞到起點、終點的背後
+        cells = frozenset(c for c in _thicken(segment, path.width, grid) if c not in ends)
+        blockers = grid.owners(cells)
+        if blockers:
+            pushed |= blockers
+            continue
+        return cells, segment[0], segment[-1], pushed
+    if not pushed:
+        raise SceneError(f"{path.name}.to：{path.start} 跟 {path.to} 已經相接，路徑沒有格")
+    blocked = "、".join(sorted(pushed))
+    raise SceneError(f"{path.name}.to：從 {path.start} 到 {path.to} 的路都被 {blocked} 擋住")
+
+
+def _between(line: list[Cell], start: frozenset[Cell], end: frozenset[Cell]) -> list[Cell]:
+    """中線上最後一次離開起點之後、第一次碰到終點之前的那一段。
+
+    中線離開 L 形的對象又繞回來時，只留真的連起兩端的那段，不留殘枝。
+    """
+    stop = next((i for i, c in enumerate(line) if c in end), len(line))
+    begin = max((i for i in range(stop) if line[i] in start), default=-1) + 1
+    return line[begin:stop]
+
+
+def _middle_cell(grid: _Grid, name: str) -> Cell:
+    """元素自己的格裡，離外框中心最近的一格；L 形路徑的外框中心可能不在路上。"""
+    cx, cy = _center(grid.bbox(name))
+    return min(grid.cells[name], key=lambda c: (abs(c[0] - cx) + abs(c[1] - cy), c[1], c[0]))
+
+
+def _l_line(a: Cell, b: Cell, shape: str) -> list[Cell]:
+    """L 形的中線，從 a 走到 b。"""
+    (ax, ay), (bx, by) = a, b
+    corner = (bx, ay) if shape == "hv" else (ax, by)
+    return _segment(a, corner) + _segment(corner, b)[1:]
+
+
+def _segment(a: Cell, b: Cell) -> list[Cell]:
+    (ax, ay), (bx, by) = a, b
+    if ay == by:
+        step = 1 if bx >= ax else -1
+        return [(x, ay) for x in range(ax, bx + step, step)]
+    step = 1 if by >= ay else -1
+    return [(ax, y) for y in range(ay, by + step, step)]
+
+
+def _thicken(line: list[Cell], width: int, grid: _Grid) -> set[Cell]:
+    """中線加寬成路：每一點擴成 width x width 的方塊，切掉 level 外的格。"""
+    offset = width // 2
+    cells: set[Cell] = set()
+    for x, y in line:
+        for dy in range(width):
+            for dx in range(width):
+                cx, cy = x - offset + dx, y - offset + dy
+                if 0 <= cx < grid.width and 0 <= cy < grid.height:
+                    cells.add((cx, cy))
+    return cells

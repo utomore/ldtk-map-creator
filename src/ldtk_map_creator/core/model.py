@@ -11,6 +11,8 @@ class IntGridValueDef(TypedDict):
     value: int
     identifier: str | None
     color: str
+    tile: object | None
+    groupUid: int
 
 
 class LayerDef(TypedDict):
