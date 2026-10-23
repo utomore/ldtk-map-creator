@@ -363,7 +363,7 @@ def world_positions(scene: SceneMap) -> dict[str, tuple[int, int]]:
     跟 LDtk 顯示的一樣；其他排法照 worldX、worldY。
     """
     project = scene.project
-    layout = cast(dict[str, object], project).get("worldLayout")
+    layout = project["worldLayout"]
     positions: dict[str, tuple[int, int]] = {}
     offset = 0
     for level in project["levels"]:
@@ -450,14 +450,9 @@ def render_world(scene: SceneMap) -> Image.Image:
     image = Image.new("RGBA", (width, height), _FRAME)
     draw = ImageDraw.Draw(image, "RGBA")
     for level in levels:
-        name = level["identifier"]
-        x, y, w, h = view.rects[name]
-        tile = render_level(scene, name, scale=1)
-        # 切掉座標邊框，再縮到總覽的大小；縮小用 BOX，細線與小 entity 不會忽有忽無
-        inner = tile.crop((MARGIN, MARGIN, tile.width, tile.height))
-        # Pillow 的 stub 在 resize 的一個 overload 帶 Unknown，只在這一行放寬
-        resized = inner.resize((w, h), Image.Resampling.BOX)  # pyright: ignore[reportUnknownMemberType]
-        image.paste(resized, (x, y))
+        # 直接用總覽的倍率畫，不先照原尺寸 render 再縮小：很大的世界也只用到總覽那麼多記憶體
+        _draw_level_small(draw, scene, level, view)
+        x, y, w, h = view.rects[level["identifier"]]
         draw.rectangle((x, y, x + w - 1, y + h - 1), outline=_LABEL)
     for start, end in world_links(scene):
         points = [view.point(*start), view.point(*end)]
@@ -483,12 +478,62 @@ def render_world(scene: SceneMap) -> Image.Image:
     return image
 
 
+def _draw_level_small(
+    draw: ImageDraw.ImageDraw, scene: SceneMap, level: Level, view: WorldView
+) -> None:
+    """總覽裡的一個 level：背景色、看得見的 IntGrid（最下層先畫）、entity 方塊；不畫格線。"""
+    project = scene.project
+    x, y, w, h = view.rects[level["identifier"]]
+    scale = view.scale
+    draw.rectangle((x, y, x + w - 1, y + h - 1), fill=_rgb(level_bg_color(project, level)))
+    layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
+    entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
+    visible = [ly for ly in level["layerInstances"] or [] if ly["visible"]]
+
+    def box(px: float, py: float, pw: float, ph: float) -> tuple[int, int, int, int]:
+        # level 裡的像素範圍換成總覽的格；至少一個像素，看得見
+        left, top = x + int(px * scale), y + int(py * scale)
+        right = max(left, x + int((px + pw) * scale) - 1)
+        bottom = max(top, y + int((py + ph) * scale) - 1)
+        return left, top, min(right, x + w - 1), min(bottom, y + h - 1)
+
+    for layer in reversed(visible):
+        ldef = layer_defs.get(layer["layerDefUid"])
+        if ldef is None or ldef["type"] != "IntGrid":
+            continue
+        grid = ldef["gridSize"]
+        cols = cell_count(level["pxWid"], grid)
+        colors = {
+            v["value"]: _rgb(v["color"], ldef["displayOpacity"]) for v in ldef["intGridValues"]
+        }
+        ox = layer["pxOffsetX"] + ldef["pxOffsetX"]
+        oy = layer["pxOffsetY"] + ldef["pxOffsetY"]
+        for index, value in enumerate(layer["intGridCsv"]):
+            color = colors.get(value)
+            if value == 0 or color is None:
+                continue
+            cx, cy = index % cols, index // cols
+            draw.rectangle(box(ox + cx * grid, oy + cy * grid, grid, grid), fill=color)
+    for layer in reversed(visible):
+        ldef = layer_defs.get(layer["layerDefUid"])
+        ox = layer["pxOffsetX"] + (ldef["pxOffsetX"] if ldef else 0)
+        oy = layer["pxOffsetY"] + (ldef["pxOffsetY"] if ldef else 0)
+        for entity in layer["entityInstances"]:
+            edef = entity_defs.get(entity["defUid"])
+            if edef is None:
+                continue
+            ex = ox + entity["px"][0] - edef["pivotX"] * entity["width"]
+            ey = oy + entity["px"][1] - edef["pivotY"] * entity["height"]
+            draw.rectangle(box(ex, ey, entity["width"], entity["height"]), fill=_rgb(edef["color"]))
+
+
 def world_preview_path(scene: SceneMap) -> Path:
     """世界總覽的位置：`previews/<主檔名>/world-overview.png`（D-002）。"""
     return scene.path.parent / "previews" / scene.path.stem / f"{WORLD_PREVIEW}.png"
 
 
 def write_world_preview(scene: SceneMap, image: Image.Image) -> Path:
+    """把 render 好的世界總覽存起來，回傳路徑。"""
     path = world_preview_path(scene)
     _write_png(path, image)
     return path

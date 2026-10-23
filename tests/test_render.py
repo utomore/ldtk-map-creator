@@ -419,28 +419,39 @@ def test_example_record_with_nan_position_is_skipped() -> None:
 
 @pytest.mark.law("RENDER-6")
 @settings(max_examples=30, deadline=None)
-@given(placeable_multi_village_rules(min_portals=1))
-def test_render_6_world_overview(r: Rules) -> None:
+@given(
+    placeable_multi_village_rules(min_portals=1),
+    st.sampled_from(["Free", "LinearHorizontal", "LinearVertical"]),
+)
+def test_render_6_world_overview(r: Rules, arrangement: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk")
+    levels = scene.project["levels"]
+    # 線性排法：LDtk 把世界座標存成 -1，照 level 的順序接著排（這裡獨立另算一次）
+    at = {lv["identifier"]: (lv["worldX"], lv["worldY"]) for lv in levels}
+    if arrangement != "Free":
+        scene.project["worldLayout"] = arrangement
+        offset = 0
+        for lv in levels:
+            horizontal = arrangement == "LinearHorizontal"
+            at[lv["identifier"]] = (offset, 0) if horizontal else (0, offset)
+            offset += lv["pxWid"] if horizontal else lv["pxHei"]
+            lv["worldX"], lv["worldY"] = -1, -1
     image = render_world(scene)
     assert image.tobytes() == render_world(scene).tobytes()  # 同一份場景地圖，位元組相同
-    levels = scene.project["levels"]
-    left = min(lv["worldX"] for lv in levels)
-    top = min(lv["worldY"] for lv in levels)
+    left = min(x for x, _ in at.values())
+    top = min(y for _, y in at.values())
     span = max(
-        max(lv["worldX"] + lv["pxWid"] for lv in levels) - left,
-        max(lv["worldY"] + lv["pxHei"] for lv in levels) - top,
+        max(at[lv["identifier"]][0] + lv["pxWid"] for lv in levels) - left,
+        max(at[lv["identifier"]][1] + lv["pxHei"] for lv in levels) - top,
     )
     scale = min(1.0, 1600 / span)
     frame = (24, 26, 34, 255)
     rects = world_view(scene).rects
     for level in levels:  # 照世界座標等比例縮小，左上角留邊框
         x, y, w, h = rects[level["identifier"]]
-        assert (x, y) == (
-            MARGIN + round((level["worldX"] - left) * scale),
-            MARGIN + round((level["worldY"] - top) * scale),
-        )
+        wx, wy = at[level["identifier"]]
+        assert (x, y) == (MARGIN + round((wx - left) * scale), MARGIN + round((wy - top) * scale))
         assert (w, h) == (
             max(1, round(level["pxWid"] * scale)),
             max(1, round(level["pxHei"] * scale)),
@@ -449,6 +460,22 @@ def test_render_6_world_overview(r: Rules) -> None:
             1 for i in range(w) for j in range(h) if image.getpixel((x + i, y + j)) == frame
         )
         assert background < 0.1 * w * h, level["identifier"]  # level 有畫出來，不是空白
+        # IntGrid 有畫出來：level 裡用到的種類，顏色出現在它的範圍裡
+        intgrid = next(ly for ly in level["layerInstances"] or [] if ly["__type"] == "IntGrid")
+        used = {v for v in intgrid["intGridCsv"] if v}
+        colors = {_hex(k.color) for k in r.kinds if k.value in used}
+        seen = {image.getpixel((x + i, y + j)) for i in range(w) for j in range(h)}
+        assert not colors or colors & seen, level["identifier"]
+        # entity 方塊也畫出來（倍率夠大、方塊比線的端點大的時候才看得到）
+        if scale >= 0.5:
+            types = {
+                _hex(d["color"])
+                for d in scene.project["defs"]["entities"]
+                for ly in level["layerInstances"] or []
+                for e in ly["entityInstances"]
+                if e["defUid"] == d["uid"]
+            }
+            assert types <= seen, level["identifier"]
     # 每一對互指的 EntityRef（傳送點）畫一條線：兩端換成總覽座標後，中點附近是線的顏色
     links = world_links(scene)
     assert len(links) == len(r.portals)
@@ -477,7 +504,7 @@ def _two_rooms(tmp_path: Path) -> SceneMap:
 def test_example_linear_layout_lines_levels_up(tmp_path: Path) -> None:
     """LDtk 的線性排法把世界座標存成 -1：照 level 的順序接著排，不疊成一團。"""
     scene = _two_rooms(tmp_path)
-    scene.project["worldLayout"] = "LinearHorizontal"  # type: ignore[typeddict-unknown-key]
+    scene.project["worldLayout"] = "LinearHorizontal"
     for level in scene.project["levels"]:
         level["worldX"], level["worldY"] = -1, -1
     rects = world_view(scene).rects
