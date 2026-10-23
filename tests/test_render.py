@@ -1,6 +1,7 @@
 """RENDER-1～RENDER-4：預覽圖。"""
 
 import copy
+import dataclasses
 import io
 import tempfile
 from pathlib import Path
@@ -16,7 +17,7 @@ from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import generate_scene
 from ldtk_map_creator.core.record import name_positions
 from ldtk_map_creator.core.render import MARGIN, image_size, render_level, write_preview
-from ldtk_map_creator.core.rules import AreaRule, Kind, Rules
+from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 from tests.rule_strategies import placeable_village_rules
 
@@ -224,6 +225,8 @@ def test_example_label_in_one_row_level_stays_inside(tmp_path: Path) -> None:
 @settings(max_examples=40, deadline=None)
 @given(placeable_village_rules(), st.integers(1, 3), st.integers(0, 99))
 def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
+    # 名稱畫在 entity 下面，可能被蓋住量不到；跟 entity 的關係由例子另外驗
+    r = dataclasses.replace(r, entities=())
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
     names = name_positions(placed)
@@ -253,9 +256,16 @@ def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
         half = (high - low) / 2
         expected = min(max(at, start + half), end - half)
         assert abs((low + high) / 2 - expected) <= cell / 2 + 2
-    # 淺色字加深色描邊：不管底下是什麼顏色都看得清楚
-    region = labelled.convert("L").crop(box)
-    darkest, lightest = cast(tuple[int, int], region.getextrema())
+    # 淺色字加深色描邊：只看真的被畫過的像素，底下的地圖不算
+    changed = ImageChops.difference(plain.convert("L"), labelled.convert("L"))
+    # 有變就是 255；Pillow 的 stub 在 point 的一個 overload 帶 Unknown，只在這一行放寬
+    changed = changed.point([0] + [255] * 255)  # pyright: ignore[reportUnknownMemberType]
+    drawn = Image.new("L", labelled.size, 255)
+    drawn.paste(labelled.convert("L"), mask=changed)
+    darkest = cast(tuple[int, int], drawn.getextrema())[0]
+    drawn = Image.new("L", labelled.size, 0)
+    drawn.paste(labelled.convert("L"), mask=changed)
+    lightest = cast(tuple[int, int], drawn.getextrema())[1]
     assert lightest >= 200 and darkest <= 60
 
 
@@ -289,3 +299,66 @@ def test_example_long_name_at_the_corner_stays_inside() -> None:
         free = ImageChops.difference(plain.convert("RGB"), middle.convert("RGB")).getbbox()
         assert free is not None
         assert (box[2] - box[0], box[3] - box[1]) == (free[2] - free[0], free[3] - free[1]), label
+
+
+def test_example_name_does_not_cover_an_entity_on_it() -> None:
+    """entity 擺在區域正中央、名稱也寫在那裡時，entity 方塊照樣看得見（RENDER-3）。"""
+    r = Rules(
+        0,
+        "L",
+        (10, 10),
+        (Kind("k", 1, "#000000"),),
+        (AreaRule("plaza", "k", (3, 3), at="center"),),
+        (),
+        (EntityRule("spawn", "Spawn", "plaza.center"),),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    image = render_level(scene, "L", labels=name_positions(placed))
+    x, y = placed.entities["spawn"]
+    center = (MARGIN + x * 32 + 16, MARGIN + y * 32 + 16)
+    assert image.getpixel(center) == _hex(scene.project["defs"]["entities"][0]["color"])
+
+
+def test_example_name_wider_than_the_level() -> None:
+    """名稱比整個 level 還寬：縮小字或不寫，都不跑出 level、不蓋到座標。"""
+    r = Rules(
+        0,
+        "L",
+        (2, 1),
+        (Kind("k", 1, "#000000"),),
+        (AreaRule("a_name_far_too_long_for_two_cells", "k", (1, 1), at=(0, 0)),),
+        (),
+        (),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    level = scene.level("L")
+    for scale in (1, 2):
+        plain = render_level(scene, "L", scale=scale)
+        labelled = render_level(scene, "L", scale=scale, labels=name_positions(placed))
+        box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
+        if box is not None:
+            assert box[0] >= MARGIN and box[1] >= MARGIN
+            assert box[2] <= MARGIN + level["pxWid"] * scale
+            assert box[3] <= MARGIN + level["pxHei"] * scale
+
+
+def test_example_medium_name_shrinks_to_fit() -> None:
+    """名稱比 level 寬一點：縮小字寫得下就寫，不是直接不寫。"""
+    r = Rules(
+        0,
+        "L",
+        (2, 1),
+        (Kind("k", 1, "#000000"),),
+        (AreaRule("medium", "k", (1, 1), at=(0, 0)),),
+        (),
+        (),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    plain = render_level(scene, "L", scale=1)
+    labelled = render_level(scene, "L", scale=1, labels=name_positions(placed))
+    box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
+    assert box is not None
+    assert box[0] >= MARGIN and box[2] <= MARGIN + 32

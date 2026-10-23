@@ -114,14 +114,15 @@ def _fields(owner: object) -> list[list[object]]:
     return [[f.get("defUid"), f.get("__value")] for f in found]
 
 
-def make_record(target: SceneMap, placed: Layout) -> dict[str, Any]:
-    """生成之後要寫進紀錄的資料：場景地圖的內容，加上每個元素的位置（用來說誰移動了）。"""
+def make_record(target: SceneMap, placed: Layout, level: str) -> dict[str, Any]:
+    """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素的位置（用來說誰移動了），
+    以及預覽圖上 `level` 要寫的元素名稱。
+    """
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
         elements[name] = _digest(sorted(cells))
     for name, cell in placed.entities.items():
         elements[name] = _digest([cell])
-    level = target.project["levels"][0]["identifier"]
     names = [[name, x, y] for name, x, y in name_positions(placed)]
     return {
         "version": VERSION,

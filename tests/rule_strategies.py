@@ -19,6 +19,7 @@ from ldtk_map_creator.core.rules import (
     PathRule,
     Rules,
 )
+from ldtk_map_creator.core.scene import RESERVED_NAMES
 
 
 def width_limit(to: str, level_size: tuple[int, int]) -> int:
@@ -100,7 +101,8 @@ def rules(
             at = draw(st.sampled_from(anchors) | cell if anchors else cell)
             entities.append(EntityRule(name, draw(entity_types), at))
     seed = draw(st.integers(-(2**63), 2**63 - 1))
-    level = draw(names)
+    # level 名稱拆開存時就是檔名，Windows 的裝置名稱不合法（RULE-2 會擋）
+    level = draw(names.filter(lambda n: n.lower() not in RESERVED_NAMES))
     return Rules(seed, level, (width, height), kinds, tuple(areas), tuple(paths), tuple(entities))
 
 

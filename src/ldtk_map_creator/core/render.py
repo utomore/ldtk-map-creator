@@ -4,10 +4,10 @@
 - 背景是 level 的背景色。
 - 看得見的 IntGrid 從最下層畫到最上層，每個值用定義的顏色與圖層透明度；0 不畫。
 - entity 畫成定義顏色的方塊（用 entity 自己的尺寸），名稱寫在方塊上方；貼著上緣時寫在下方。
-- 格線，加上方與左邊的格子座標，方便在對話裡指定位置。
+- 格線畫在 IntGrid 上面，加上方與左邊的格子座標，方便在對話裡指定位置。
 - 都加上圖層的像素偏移，跟 LDtk 顯示的位置一致。
-- 給了元素名稱時（從規則生成的 level），最後把名稱寫在元素的位置上，加深色描邊，
-  不被格線或顏色蓋掉；名稱整個留在 level 範圍內。
+- 給了元素名稱時（從規則生成的 level），名稱寫在元素的位置上，加深色描邊，畫在格線上、
+  entity 下：不被格線或顏色蓋掉，也不蓋住 entity；名稱整個留在 level 範圍內。
 
 render 只讀不改：不呼叫 refresh_derived，所有值從定義與本體欄位算。
 """
@@ -106,6 +106,10 @@ def render_level(
         ldef = layer_defs[layer["layerDefUid"]]
         if ldef["type"] == "IntGrid":
             _draw_intgrid(draw, level, layer, ldef, scale)
+    # 格線與元素名稱畫在 IntGrid 上、entity 下：名稱不被格線蓋掉，也不蓋住 entity
+    origin = _label_grid(project, level, layer_defs, scale)
+    _draw_grid(draw, level, origin, scale)
+    _draw_names(draw, level, origin, labels, scale)
     boxes: list[tuple[EntityDef, tuple[int, int, int, int]]] = []
     for layer in reversed(visible):
         ldef = layer_defs[layer["layerDefUid"]]
@@ -128,9 +132,6 @@ def render_level(
     for name, (xy, anchor, inside) in entity_labels:
         if inside:
             draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
-    origin = _label_grid(project, level, layer_defs, scale)
-    _draw_grid(draw, level, origin, scale)
-    _draw_names(draw, level, origin, labels, scale)
     return image
 
 
@@ -141,18 +142,21 @@ def _draw_names(
     labels: Sequence[Label],
     scale: int,
 ) -> None:
-    """元素名稱寫在格座標 (x, y) 上：淺色字加深色描邊；放不下時往內推，整個留在 level 裡。"""
+    """元素名稱寫在格座標 (x, y) 上：淺色字加深色描邊，整個留在 level 裡。
+
+    靠邊放不下就往內推；比 level 還寬或還高就縮小字，縮到最小還放不下就不寫。
+    """
     grid, origin_x, origin_y = origin
-    font = _font(name_size(scale))
-    stroke = name_stroke(scale)
+    stroke = _name_stroke(scale)
     right = MARGIN + level["pxWid"] * scale - 1
     bottom = MARGIN + level["pxHei"] * scale - 1
     for name, x, y in labels:
+        fitted = _fit(draw, name, stroke, right - MARGIN + 1, bottom - MARGIN + 1, scale)
+        if fitted is None:
+            continue
+        font, (left, top, end, low) = fitted
         cx = origin_x + x * grid * scale
         cy = origin_y + y * grid * scale
-        left, top, end, low = draw.textbbox(
-            (0, 0), name, font=font, anchor="mm", stroke_width=stroke
-        )
         cx = min(max(cx, MARGIN - left), right - end)
         cy = min(max(cy, MARGIN - top), bottom - low)
         draw.text(
@@ -166,12 +170,27 @@ def _draw_names(
         )
 
 
-def name_size(scale: int) -> int:
+_SMALLEST_NAME = 6
+
+
+def _fit(
+    draw: ImageDraw.ImageDraw, name: str, stroke: int, width: int, height: int, scale: int
+) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, tuple[float, float, float, float]] | None:
+    """從正常字級往下找放得進 width x height 的字；都放不下回傳 None。"""
+    for size in range(_name_size(scale), _SMALLEST_NAME - 1, -1):
+        font = _font(size)
+        box = draw.textbbox((0, 0), name, font=font, anchor="mm", stroke_width=stroke)
+        if box[2] - box[0] <= width and box[3] - box[1] <= height:
+            return font, box
+    return None
+
+
+def _name_size(scale: int) -> int:
     """元素名稱的字級。"""
     return max(12, 7 * scale)
 
 
-def name_stroke(scale: int) -> int:
+def _name_stroke(scale: int) -> int:
     """元素名稱描邊的寬度。"""
     return max(2, scale)
 
