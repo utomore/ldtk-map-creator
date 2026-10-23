@@ -27,7 +27,7 @@ decision-makers: [utomore]
 **CI：**
 
 - GitHub Actions，PR 與 push 到 `main` 時跑：ruff、pyright、pytest。
-- 和本地的 `make check`、`make test` 是同一道。
+- 和本地的 `bash scripts/check.sh`、`bash scripts/test.sh` 是同一道（這台機器沒有 make，不用 Makefile）。
 - CI 全綠才能合進 `main`；分支保護由我在 GitHub 設定。
 
 **CD：**現在只有 CI；工具在本機跑，沒有部署目標，M4 之後再定。
