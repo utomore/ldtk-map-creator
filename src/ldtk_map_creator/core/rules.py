@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .errors import SceneError
+from .scene import IDENTIFIER, RESERVED_NAMES
 
 Side = Literal["north", "east", "south", "west"]
 SIDES: tuple[Side, ...] = ("north", "east", "south", "west")
 Cell = tuple[int, int]
 
-_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
 _EDGE = "edge:"
 # 每種元素提供的錨點：`<元素名>.<錨點>`
@@ -74,10 +74,10 @@ class Rules:
     seed: int
     level_name: str
     level_size: Cell
-    kinds: tuple[Kind, ...] = ()
-    areas: tuple[AreaRule, ...] = ()
-    paths: tuple[PathRule, ...] = ()
-    entities: tuple[EntityRule, ...] = ()
+    kinds: tuple[Kind, ...]
+    areas: tuple[AreaRule, ...]
+    paths: tuple[PathRule, ...]
+    entities: tuple[EntityRule, ...]
 
 
 def load_rules(path: Path) -> Rules:
@@ -98,6 +98,9 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     level = _table(data["level"], "level")
     _keys(level, "level", required={"name", "size"})
     level_name = _name(level["name"], "level.name")
+    # 拆開存時 level 名稱就是檔名，跟 add_level 擋一樣的名稱
+    if level_name.lower() in RESERVED_NAMES:
+        raise SceneError(f"level.name：不能用 Windows 的裝置名稱：{level_name}")
     level_size = _size(level["size"], "level.size")
 
     kinds = _kinds(data.get("kinds", {}))
@@ -216,8 +219,7 @@ def _check_links(rules: Rules) -> None:
             target(area.near, f"{area.name}.near")
     for path in rules.paths:
         _check_kind(path.kind, kinds, f"{path.name}.kind")
-        # 路徑方向要排了才知道，這裡只擋兩個方向都放不下的
-        if path.width > max(width, height):
+        if path.width > path_width_limit(path, rules.level_size):
             raise SceneError(f"{path.name}.width：{path.width} 比 level 的 {width}x{height} 寬")
         target(path.start, f"{path.name}.from")
         if not path.to.startswith(_EDGE):
@@ -232,6 +234,20 @@ def _check_links(rules: Rules) -> None:
         elif entity.at not in anchors:
             raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
     _check_cycles(rules)
+
+
+def path_width_limit(path: PathRule, level_size: Cell) -> int:
+    """路徑最寬能多寬：通到南北邊的是直的，不能比 level 寬；通到東西邊的不能比 level 高。
+
+    兩個元素之間的路徑方向要排了才知道，只擋兩個方向都放不下的。
+    """
+    width, height = level_size
+    side = path.to.removeprefix(_EDGE) if path.to.startswith(_EDGE) else None
+    if side in ("north", "south"):
+        return width
+    if side in ("east", "west"):
+        return height
+    return max(width, height)
 
 
 def _check_kind(kind: str, kinds: set[str], where: str) -> None:
@@ -255,19 +271,23 @@ def _check_cycles(rules: Rules) -> None:
         if root in done:
             continue
         stack = [root]
+        on_stack = {root}
         todo = [iter(edges[root])]
         while todo:
             step = next(todo[-1], None)
             if step is None:
-                done.add(stack.pop())
+                name = stack.pop()
+                on_stack.discard(name)
+                done.add(name)
                 todo.pop()
                 continue
             ref, field = step
-            if ref in stack:
+            if ref in on_stack:
                 loop = " → ".join([*stack[stack.index(ref) :], ref])
                 raise SceneError(f"{stack[-1]}.{field}：元素互相指向成環：{loop}")
             if ref not in done:
                 stack.append(ref)
+                on_stack.add(ref)
                 todo.append(iter(edges[ref]))
 
 
@@ -317,7 +337,7 @@ def _str(value: object, where: str) -> str:
 
 def _name(value: object, where: str) -> str:
     text = _str(value, where)
-    if not _NAME.fullmatch(text):
+    if not IDENTIFIER.fullmatch(text):
         raise SceneError(f"{where}：名稱只能用英數字與底線，且不以數字開頭：{text!r}")
     return text
 

@@ -13,9 +13,11 @@ from .errors import SceneError
 from .files import atomic_write
 from .model import LayerInstance, Level, Project
 
-_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # 拆開存時 level 名稱就是檔名；Windows 不准用這些裝置名稱當檔名
-_RESERVED = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)}
+RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {
+    f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)
+}
 _HEADER_KEY = "__header__"
 
 
@@ -98,12 +100,12 @@ def add_level(
 ) -> Level:
     """新增一個空的 level；尺寸以格為單位，世界座標以像素為單位。"""
     project = scene.project
-    if not _IDENTIFIER.fullmatch(identifier):
+    if not IDENTIFIER.fullmatch(identifier):
         raise SceneError(f"level 名稱只能用英數字與底線，且不以數字開頭：{identifier}")
     # 拆開存時檔名就是 level 名稱；不分大小寫的檔案系統上，大小寫不同也會撞檔
     if any(lv["identifier"].lower() == identifier.lower() for lv in project["levels"]):
         raise SceneError(f"已經有同名的 level（不分大小寫）：{identifier}")
-    if identifier.lower() in _RESERVED:
+    if identifier.lower() in RESERVED_NAMES:
         raise SceneError(f"level 名稱不能用 Windows 的裝置名稱：{identifier}")
     if width_cells < 1 or height_cells < 1:
         raise SceneError(f"level 尺寸至少 1 格：{width_cells}x{height_cells}")

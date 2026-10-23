@@ -16,6 +16,17 @@ from ldtk_map_creator.core.rules import (
     Rules,
 )
 
+
+def width_limit(to: str, level_size: tuple[int, int]) -> int:
+    """路徑最寬能多寬，獨立於 core 另寫一次：南北向不能比 level 寬，東西向不能比 level 高。"""
+    width, height = level_size
+    if to in ("edge:north", "edge:south"):
+        return width
+    if to in ("edge:east", "edge:west"):
+        return height
+    return max(width, height)
+
+
 names = st.from_regex(r"[A-Za-z_][A-Za-z0-9_]{0,8}", fullmatch=True)
 
 
@@ -67,8 +78,8 @@ def rules(draw: st.DrawFn) -> Rules:
             start = draw(st.sampled_from(targets))
             others = [t for t in targets if t != start]
             to = draw(edge | st.sampled_from(others) if others else edge)
-            width_cells = draw(st.integers(1, max(width, height)))
-            paths.append(PathRule(name, draw(kind), start, to, width_cells))
+            path_width = draw(st.integers(1, width_limit(to, (width, height))))
+            paths.append(PathRule(name, draw(kind), start, to, path_width))
             targets.append(name)
             anchors += [f"{name}.{a}" for a in PATH_ANCHORS]
         else:

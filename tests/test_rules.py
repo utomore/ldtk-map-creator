@@ -17,7 +17,7 @@ from ldtk_map_creator.core.rules import (
     load_rules,
     parse_rules,
 )
-from tests.rule_strategies import rules, to_toml_data
+from tests.rule_strategies import rules, to_toml_data, width_limit
 
 FAST = settings(max_examples=300, deadline=None)
 BROKEN = settings(max_examples=1000, deadline=None)
@@ -47,13 +47,13 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     elements = _elements(data)
     kinds: dict[str, dict[str, Any]] = data["kinds"]
     options = ["top_key", "level_key", "level_size", "bad_seed", "kind_value", "kind_color"]
-    options.append("bool_int")
+    options += ["bool_int", "level_reserved"]
     if elements:
         options += ["element_key", "bad_type", "missing_kind_or_ref"]
     if good.paths or any(a.near for a in good.areas):
         options.append("self_ref")
     if good.paths:
-        options.append("path_same_ends")
+        options += ["path_same_ends", "path_too_wide"]
     if len(elements) >= 2:
         options.append("duplicate")
     if any(a.at is not None for a in good.areas):
@@ -164,6 +164,14 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             del x["at"]
             # 其他元素都只指向排在前面的，所以環一定經過 x，由某條指向 x 的邊報出
             return data, "|".join(f"{e['name']}.{f}" for e, f in pointing)
+        case "path_too_wide":
+            index = draw(st.integers(0, len(good.paths) - 1))
+            path = data["path"][index]
+            path["width"] = width_limit(good.paths[index].to, good.level_size) + 1
+            return data, f"{path['name']}.width"
+        case "level_reserved":
+            data["level"]["name"] = draw(st.sampled_from(["con", "NUL", "Com1", "lpt9"]))
+            return data, "level.name"
         case "path_same_ends":
             path = draw(st.sampled_from(data["path"]))
             path["to"] = path["from"]
@@ -210,7 +218,7 @@ def test_toml_syntax_error(tmp_path: Path) -> None:
         load_rules(path)
 
 
-def test_long_reference_chain() -> None:
+def test_23_long_reference_chain() -> None:
     """曾經壞過：一長串 near 讓成環檢查超過遞迴上限，丟出 RecursionError（#23 審查）。"""
     # 每個區域靠近排在後面的那個，檢查從第一個走起就要走完整條
     areas: list[dict[str, Any]] = [
