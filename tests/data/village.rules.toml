@@ -1,0 +1,49 @@
+# 範例規則檔：村莊。每一個 [[...]] 是一個元素，對應地圖上的一塊東西。
+seed = 7
+
+[level]
+name = "Village"
+size = [40, 30]  # 格
+
+[kinds]
+plaza = { value = 1, color = "#C8B27A" }
+house = { value = 2, color = "#8A4B2F" }
+road = { value = 3, color = "#8E8E8E" }
+
+[[area]]
+name = "plaza"
+kind = "plaza"
+size = [8, 8]
+at = "center"
+
+[[area]]
+name = "house_1"
+kind = "house"
+size = [5, 4]
+near = "plaza"
+
+[[area]]
+name = "house_2"
+kind = "house"
+size = [6, 5]
+near = "plaza"
+side = "east"
+gap = 3
+
+[[area]]
+name = "well"
+kind = "house"
+size = [1, 1]
+at = [2, 3]
+
+[[path]]
+name = "main_road"
+kind = "road"
+from = "plaza"
+to = "edge:south"
+width = 2
+
+[[entity]]
+name = "spawn"
+type = "Spawn"
+at = "main_road.end"
