@@ -10,6 +10,7 @@
 import contextlib
 import copy
 import functools
+import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -93,14 +94,16 @@ def _commit(
     primary: str,
     iid: str | None = None,
     extra: dict[Path, bytes] | None = None,
+    remove: set[Path] | None = None,
 ) -> ActionResult:
     """寫回有變的 level 與它們的預覽圖；失敗時還原磁碟上動過的檔。
 
     - `before` 是操作前每個 level（以 iid 為鍵）的複本；None 表示全部都是新的。
     - `primary` 是這次操作的目標 level：就算內容沒變，也一定回傳它的預覽圖。
-    - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）。
+    - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）；`remove` 是要一起刪的檔。
     """
     extra = extra or {}
+    remove = remove or set()
     refresh_derived(target.project)
     levels = target.project["levels"]
     changed = [lv["identifier"] for lv in levels if before is None or before.get(lv["iid"]) != lv]
@@ -116,17 +119,14 @@ def _commit(
     names = {lv["identifier"] for lv in levels}
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
-    # level 不在了（改名或被拿掉），它的預覽圖也一起刪
-    previews_folder = rendering.preview_path(target, primary).parent
-    old_previews = {p for p in previews_folder.glob("*.png") if p.stem not in names}
-    touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | old_previews
+    touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | remove
     saved = _snapshot(touched)
     try:
         scene.save_scene(target, levels=set(changed), refreshed=True)
         previews = tuple(rendering.write_preview(target, lv, image) for lv, image in images.items())
         for path, data in extra.items():
             atomic_write(path, data)
-        for old in old_previews:
+        for old in remove:
             old.unlink(missing_ok=True)
     except BaseException:
         _restore(saved)
@@ -308,8 +308,9 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     `force=True` 才蓋掉。存法沿用既有的場景地圖，新建時拆開存。
     """
     rules = load_rules(record.rules_path(path))
-    previous = _read_record(path, force)
-    split = True
+    # 地圖不在就沒有東西要保護，也不拿殘留的紀錄來比
+    previous = _read_record(path, force) if path.exists() else None
+    split = _stored_split(path)
     before: dict[str, object] | None = None
     current = _load_current(path, force) if path.exists() else None
     if current is not None:
@@ -322,20 +323,43 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                     f"{path} 沒有上次生成的紀錄，不知道有沒有被直接改過，不覆蓋；"
                     "確定要照規則蓋掉就帶 force"
                 )
-            diff = record.differences(previous["content"], record.content(current))
+            diff = record.differences(previous["content"], _content(current))
             if diff:
                 listed = "\n".join(f"- {line}" for line in diff)
                 raise SceneError(
                     f"{path} 在上次生成之後被直接改過，不覆蓋：\n{listed}\n"
                     "要保留這些改動，就把它們寫進規則檔；確定要蓋掉就帶 force"
                 )
-    # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；帶 force 或重新生成才蓋掉
-    overwrite = force or path.exists()
-    target, placed = generation.generate_scene(rules, path, split=split, overwrite=overwrite)
+    # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
+    target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     new_record = record.make_record(target, placed)
     summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
-    return _commit(target, before, summary, rules.level_name, extra=extra)
+    # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
+    kept = {lv["identifier"].lower() for lv in target.project["levels"]}
+    gone = [lv["identifier"] for lv in current.project["levels"]] if current else []
+    remove = {rendering.preview_path(target, lv) for lv in gone if lv.lower() not in kept}
+    return _commit(target, before, summary, rules.level_name, extra=extra, remove=remove)
+
+
+def _content(current: SceneMap) -> record.Content:
+    try:
+        return record.content(current)
+    except SceneError as error:
+        raise SceneError(
+            f"讀不了 {current.path} 的內容，沒辦法比對：{error}；帶 force 照規則蓋掉"
+        ) from error
+
+
+def _stored_split(path: Path) -> bool:
+    """既有的場景地圖怎麼存的（D-002）；讀不了主檔就看子資料夾有沒有 level 檔，新建預設拆開。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return bool(cast(dict[str, Any], data)["externalLevels"])
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return any((path.parent / path.stem).glob("*.ldtkl"))
 
 
 def _read_record(path: Path, force: bool) -> dict[str, Any] | None:

@@ -4,6 +4,7 @@ import json
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -212,7 +213,14 @@ def test_example_resize_reports_size_only() -> None:
     """尺寸變了但格數相同（4x6 變 6x4）時，只報尺寸，不列對不上座標的格子。"""
 
     def level(w: int, h: int) -> dict[str, Any]:
-        layer = {"type": "IntGrid", "values": [], "cells": [0] * (w * h), "tiles": []}
+        layer = {
+            "type": "IntGrid",
+            "width": w,
+            "settings": [0, 0, True, 1],
+            "values": [],
+            "cells": [0] * (w * h),
+            "tiles": [],
+        }
         return {
             "size": [w, h],
             "world": [0, 0],
@@ -226,3 +234,107 @@ def test_example_resize_reports_size_only() -> None:
     new: dict[str, Any] = {"defs": defs, "levels": {"L": level(6, 4)}}
     new["levels"]["L"]["layers"]["IntGrid"]["cells"][0] = 1
     assert record.differences(old, new) == ["L：大小 4x6 變成 6x4"]
+
+
+def _edit_json(path: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    change(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_example_case_only_rename_keeps_new_preview(tmp_path: Path) -> None:
+    """level 只改大小寫（Village → village）時，新的預覽圖不能被當成舊的刪掉。
+
+    Windows 不分大小寫，新舊預覽圖是同一個檔。
+    """
+    path = _generated(tmp_path)
+    rules_file = record.rules_path(path)
+    text = rules_file.read_text(encoding="utf-8")
+    rules_file.write_text(text.replace('name = "Village"', 'name = "village"'), encoding="utf-8")
+    result = actions.generate_scene(path)
+    assert all(p.is_file() for p in result.previews)
+
+
+def test_example_other_previews_are_kept(tmp_path: Path) -> None:
+    """預覽圖資料夾裡不是 level 的圖（例如之後的世界總覽）不會被操作刪掉。"""
+    path = _generated(tmp_path)
+    world = tmp_path / "previews" / "village" / "world.png"
+    world.write_bytes(b"png")
+    actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    actions.generate_scene(path, force=True)
+    assert world.is_file()
+
+
+def test_example_broken_content_asks_for_force(tmp_path: Path) -> None:
+    """在 LDtk 刪了還在用的圖層定義：丟 SceneError 並提示 force，不丟 KeyError。"""
+    path = _generated(tmp_path)
+    _edit_json(path, lambda d: d["defs"]["layers"].pop(0))
+    with pytest.raises(SceneError, match="force"):
+        actions.generate_scene(path)
+
+
+def test_example_grid_size_change_is_listed(tmp_path: Path) -> None:
+    """在 LDtk 改了 IntGrid 的格子大小：列出「格子大小改了」，不誤報成紀錄壞掉。"""
+    path = _generated(tmp_path)
+    level_file = tmp_path / "village" / "Village.ldtkl"
+
+    def finer(d: dict[str, Any]) -> None:
+        for layer in d["defs"]["layers"]:
+            if layer["type"] == "IntGrid":
+                layer["gridSize"] = 8
+
+    def more_cells(d: dict[str, Any]) -> None:
+        for layer in d["layerInstances"]:
+            if layer["__type"] == "IntGrid":
+                layer["intGridCsv"] = [0] * (len(layer["intGridCsv"]) * 4)
+
+    _edit_json(path, finer)
+    _edit_json(level_file, more_cells)
+    with pytest.raises(SceneError, match="格子大小改了"):
+        actions.generate_scene(path)
+
+
+def test_example_nudged_entity_is_an_edit(tmp_path: Path) -> None:
+    """在 LDtk 把 entity 在同一格裡挪幾個像素，也算直接改過。"""
+    path = _generated(tmp_path)
+
+    def nudge(d: dict[str, Any]) -> None:
+        for layer in d["layerInstances"]:
+            for entity in layer["entityInstances"]:
+                entity["px"][0] += 3
+
+    _edit_json(tmp_path / "village" / "Village.ldtkl", nudge)
+    with pytest.raises(SceneError, match="像素位置"):
+        actions.generate_scene(path)
+
+
+def test_example_missing_map_ignores_leftover_record(tmp_path: Path) -> None:
+    """地圖不在、只剩壞掉的生成紀錄：沒有東西要保護，照樣生成。"""
+    path = tmp_path / "village.ldtk"
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    record.record_path(path).write_text("{", encoding="utf-8")
+    actions.generate_scene(path)
+    assert record.read_record(path) is not None
+
+
+def test_example_force_keeps_single_file_storage(tmp_path: Path) -> None:
+    """單檔存的地圖壞掉時帶 force 重寫，仍然存成單檔（D-002）。"""
+    path = tmp_path / "village.ldtk"
+    actions.create_scene(path, split=False)
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text[: len(text) // 2], encoding="utf-8")  # 寫到一半當掉的主檔
+    actions.generate_scene(path, force=True)
+    assert not (tmp_path / "village").exists()
+    assert not load_scene(path).split
+
+
+def test_example_force_keeps_leftover_level_files(tmp_path: Path) -> None:
+    """主檔不在、子資料夾有別的 level 檔：帶 force 也不蓋，那些檔不是生成的。"""
+    path = tmp_path / "village.ldtk"
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    (tmp_path / "village").mkdir()
+    (tmp_path / "village" / "Cave.ldtkl").write_text("{}", encoding="utf-8")
+    with pytest.raises(SceneError, match="不覆蓋"):
+        actions.generate_scene(path, force=True)
+    assert (tmp_path / "village" / "Cave.ldtkl").is_file()

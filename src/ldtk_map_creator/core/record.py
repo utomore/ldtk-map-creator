@@ -7,6 +7,7 @@ LDtk 自己會重算或改寫的欄位（`__` 衍生欄位、auto-layer 圖塊�
 在 LDtk 打開再存一次不算改過。
 """
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -35,9 +36,19 @@ def record_path(scene_path: Path) -> Path:
 
 
 def content(target: SceneMap) -> Content:
-    """場景地圖裡使用者會改的內容；兩份相同就表示沒被直接改過。"""
-    project = target.project
-    refresh_derived(project)  # entity 的格位置從 px 重算，不靠檔案裡可能過期的 __grid
+    """場景地圖裡使用者會改的內容；兩份相同就表示沒被直接改過。
+
+    在複本上算，不改傳進來的場景地圖；內容的形狀不對（例如 LDtk 裡刪了還在用的定義）丟 SceneError。
+    """
+    try:
+        return _content(target)
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise SceneError(f"場景地圖的內容不完整（{error!r}）") from error
+
+
+def _content(target: SceneMap) -> Content:
+    project = copy.deepcopy(target.project)
+    refresh_derived(project)
     grid = project["defaultGridSize"]
     raw = cast(dict[str, Any], project["defs"])
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
@@ -59,14 +70,25 @@ def content(target: SceneMap) -> Content:
         entities: list[list[object]] = []
         for layer in level["layerInstances"] or []:
             ldef = layer_defs[layer["layerDefUid"]]
-            entry: Content = {"type": ldef["type"]}
+            raw_layer = cast(dict[str, Any], layer)
+            entry: Content = {
+                "type": ldef["type"],
+                "width": cell_count(level["pxWid"], ldef["gridSize"]),
+                "settings": [
+                    raw_layer.get("pxOffsetX"),
+                    raw_layer.get("pxOffsetY"),
+                    raw_layer.get("visible"),
+                    raw_layer.get("opacity"),
+                ],
+            }
             if ldef["type"] == "IntGrid":
                 # LDtk 存檔可能改顏色的大小寫，統一成大寫再比
                 entry["values"] = [
-                    [v["value"], v["identifier"], v["color"].upper()] for v in ldef["intGridValues"]
+                    [v["value"], v["identifier"], str(v["color"]).upper()]
+                    for v in ldef["intGridValues"]
                 ]
                 entry["cells"] = list(layer["intGridCsv"])
-            tiles = cast(dict[str, Any], layer).get("gridTiles", [])
+            tiles = raw_layer.get("gridTiles", [])
             entry["tiles"] = sorted(
                 [t.get("px"), t.get("src"), t.get("f"), t.get("t")] for t in tiles
             )
@@ -74,7 +96,9 @@ def content(target: SceneMap) -> Content:
             for entity in layer["entityInstances"]:
                 gx, gy = entity["__grid"]
                 kind = entity_defs.get(entity["defUid"])
-                entities.append([entity["iid"], kind, gx, gy, _fields(entity)])
+                # 格內的像素位置與大小也記，在 LDtk 裡挪幾個像素或改大小也算改過
+                shape = [*entity["px"], entity["width"], entity["height"]]
+                entities.append([entity["iid"], kind, gx, gy, [_fields(entity), shape]])
         levels[level["identifier"]] = {
             "size": [cell_count(level["pxWid"], grid), cell_count(level["pxHei"], grid)],
             "world": [level["worldX"], level["worldY"]],
@@ -158,7 +182,6 @@ def _level_differences(old: Content, new: Content) -> list[str]:
         lines.append(f"世界座標 {tuple(old['world'])} 變成 {tuple(new['world'])}")
     if old["fields"] != new["fields"]:
         lines.append("level 的欄位改了")
-    width = new["size"][0]
     same_size = old["size"] == new["size"]
     for layer in sorted(old["layers"].keys() | new["layers"].keys()):
         before, after = old["layers"].get(layer), new["layers"].get(layer)
@@ -169,8 +192,14 @@ def _level_differences(old: Content, new: Content) -> list[str]:
             lines.append(f"圖層 {layer} 的值定義改了")
         if before["tiles"] != after["tiles"]:
             lines.append(f"圖層 {layer} 的圖塊改了")
+        if before["settings"] != after["settings"]:
+            lines.append(f"圖層 {layer} 的偏移或顯示設定改了")
         if not same_size or "cells" not in before or "cells" not in after:
             continue  # 大小變了，上面已經說過；格子的座標對不上，不逐格比
+        if before["width"] != after["width"] or len(before["cells"]) != len(after["cells"]):
+            lines.append(f"圖層 {layer} 的格子大小改了")
+            continue
+        width = after["width"]
         diff = [
             (i, a, b) for i, (a, b) in enumerate(zip(before["cells"], after["cells"], strict=True))
         ]
@@ -194,7 +223,7 @@ def _level_differences(old: Content, new: Content) -> list[str]:
         if a[:4] != b[:4]:
             lines.append(f"{a[1]}（{iid}）從 ({a[2]},{a[3]}) 變成 {b[1]} 在 ({b[2]},{b[3]})")
         elif a != b:
-            lines.append(f"{a[1]}（{iid}）的欄位改了")
+            lines.append(f"{a[1]}（{iid}）的像素位置、大小或欄位改了")
     return lines
 
 
