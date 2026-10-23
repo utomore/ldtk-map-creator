@@ -134,6 +134,8 @@ def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, 
         elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
         elements[name] = _digest([placed.level_of[name], [cell]])
+    for name, ends in placed.portals.items():
+        elements[name] = _digest([[level, list(cell)] for level, cell in ends])
     levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}
     by_level: dict[str, list[list[object]]] = {name: [] for name in placed.levels}
     for name, x, y in name_positions(placed, areas):

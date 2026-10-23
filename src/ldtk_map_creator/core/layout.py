@@ -50,6 +50,8 @@ class Layout:
     levels: dict[str, Rect]
     # 每個元素（區域、路徑、entity）在哪個 level
     level_of: dict[str, str]
+    # 每個傳送點兩端各在哪個 level、哪一格：（from 那端, to 那端）
+    portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]]
 
 
 def placement_order(rules: Rules) -> tuple[Placeable, ...]:
@@ -120,7 +122,22 @@ def layout(rules: Rules) -> Layout:
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
         level_of[entity.name] = level
-    return Layout(cells, anchors, entities, pushed_by, levels, level_of)
+
+    # 傳送點（D-010）：兩端各一個 entity，不能落在同一格，也不跟別的 entity 擠在同一格
+    portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]] = {}
+    for portal in rules.portals:
+        ends: list[tuple[str, Cell]] = []
+        for field, anchor in (("from", portal.start), ("to", portal.to)):
+            if anchor not in anchors:
+                raise SceneError(f"{portal.name}.{field}：沒有錨點 {anchor}")
+            spot = (level_of[anchor.split(".", 1)[0]], anchors[anchor])
+            if spot in taken:
+                raise SceneError(f"{portal.name}.{field}：跟 {taken[spot]} 擺在同一格 {spot[1]}")
+            taken[spot] = f"{portal.name}.{field}"
+            ends.append(spot)
+        portals[portal.name] = (ends[0], ends[1])
+        pushed_by[portal.name] = frozenset()
+    return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals)
 
 
 def place_levels(rules: Rules) -> dict[str, Rect]:

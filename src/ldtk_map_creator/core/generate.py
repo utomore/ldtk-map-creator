@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 
 from .derived import refresh_derived
-from .edit import add_entity_def, paint_cells, place_entity
+from .edit import add_entity_def, paint_cells, place_entity, set_entity_fields
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
@@ -17,8 +17,13 @@ from .scene import SceneMap, add_level, new_scene
 
 
 def element_iid(seed: int, name: str) -> str:
-    """元素產生的 entity 的 iid。"""
+    """元素產生的 entity 的 iid；傳送點兩端是 `<名稱>:from`、`<名稱>:to`。"""
     return derived_iid(seed, f"element:{name}")
+
+
+def portal_iids(seed: int, name: str) -> tuple[str, str]:
+    """傳送點兩端 entity 的 iid（from 那端, to 那端）。"""
+    return element_iid(seed, f"{name}:from"), element_iid(seed, f"{name}:to")
 
 
 def generate_scene(
@@ -29,9 +34,6 @@ def generate_scene(
     `overwrite=True` 時磁碟上已經有這個場景地圖也照樣建，寫檔時蓋掉（重新生成）。
     """
     placed = layout(rules)
-    # 傳送點的生成還沒做（#37）；先講清楚，不默默丟掉
-    if rules.portals:
-        raise SceneError(f"{rules.portals[0].name}.from：傳送點的生成還不支援（#37）")
     scene = new_scene(path, split=split, overwrite=overwrite)
     project = scene.project
     for layer_type in ("IntGrid", "Entities"):
@@ -92,6 +94,26 @@ def generate_scene(
             # 到了 maxCount，先前擺的 entity 被挪走或丟掉
             raise SceneError(f"{entity.name}.type：{entity.type} 的數量到上限了")
         instance["iid"] = element_iid(rules.seed, entity.name)
+
+    # 傳送點：兩端各擺一個，都擺好之後再用類型唯一的 EntityRef 欄位互指（D-010）
+    types = {t.name: t for t in rules.entity_types}
+    for portal in rules.portals:
+        ends = placed.portals[portal.name]
+        iids = portal_iids(rules.seed, portal.name)
+        for field, (level_name, (x, y)), iid in zip(("from", "to"), ends, iids, strict=True):
+            try:
+                instance = place_entity(scene, level_name, portal.type, x=x, y=y)
+            except SceneError as error:
+                raise SceneError(f"{portal.name}.{field}：{error}") from error
+            instance["iid"] = iid
+        refs = types[portal.type].ref_fields() if portal.type in types else []
+        if len(refs) != 1:  # 讀規則檔時擋過；直接組出來的規則照樣報成 SceneError
+            raise SceneError(
+                f"{portal.name}.type：{portal.type} 要是宣告過、剛好一個 EntityRef 欄位的類型"
+            )
+        ref = refs[0]
+        set_entity_fields(scene, iids[0], {ref: iids[1]})
+        set_entity_fields(scene, iids[1], {ref: iids[0]})
 
     project["iid"] = derived_iid(rules.seed, "project")
     project["dummyWorldIid"] = derived_iid(rules.seed, "world")

@@ -3,6 +3,7 @@
 import dataclasses
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from hypothesis import HealthCheck, assume, given, settings
@@ -10,7 +11,7 @@ from hypothesis import strategies as st
 
 from ldtk_map_creator.core import template
 from ldtk_map_creator.core.errors import SceneError
-from ldtk_map_creator.core.generate import element_iid, generate_scene
+from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
 from ldtk_map_creator.core.model import Project
 from ldtk_map_creator.core.rules import (
@@ -20,6 +21,7 @@ from ldtk_map_creator.core.rules import (
     EntityType,
     Kind,
     PathRule,
+    PortalRule,
     Rules,
     Side,
     load_rules,
@@ -82,7 +84,9 @@ def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
             layers = [ly for lv in scene.project["levels"] for ly in lv["layerInstances"] or []]
             iids.append(sorted(e["iid"] for ly in layers for e in ly["entityInstances"]))
     assert written[0] == written[1]
-    assert iids[0] == sorted(element_iid(r.seed, e.name) for e in r.entities)
+    expected = [element_iid(r.seed, e.name) for e in r.entities]
+    expected += [iid for p in r.portals for iid in portal_iids(r.seed, p.name)]
+    assert iids[0] == sorted(expected)
 
 
 @pytest.mark.law("GEN-2")
@@ -190,6 +194,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     value = {k.name: k.value for k in r.kinds}
     kind = {e.name: e.kind for e in (*r.areas, *r.paths)}
     by_iid = {element_iid(r.seed, e.name): e.name for e in r.entities}
+    portal_ends = {iid for p in r.portals for iid in portal_iids(r.seed, p.name)}
     got: dict[str, tuple[int, ...]] = {}
     grid = loaded.project["defaultGridSize"]
     for level_name, (lx, ly, width, height) in placed.levels.items():
@@ -206,6 +211,8 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         assert intgrid["intGridCsv"] == expected_csv, level_name
         for layer in layers:
             for e in layer["entityInstances"]:
+                if e["iid"] in portal_ends:
+                    continue  # 傳送點另外由 GEN-8 檢查
                 got[by_iid[e["iid"]]] = tuple(e["__grid"])
                 assert placed.level_of[by_iid[e["iid"]]] == level_name
     assert got == placed.entities
@@ -511,11 +518,30 @@ def test_example_village_with_house_interior(tmp_path: Path) -> None:
     assert placed.level_of["room"] == "House1"
 
 
-def test_example_portal_generation_not_yet(tmp_path: Path) -> None:
-    """傳送點的生成還沒做（#37）：講清楚，不默默丟掉。"""
+def test_example_portal_links_village_and_house(tmp_path: Path) -> None:
+    """典型（D-010）：house_1 門口與房間南邊各一個 Portal，target 互指、跨 level。"""
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
-    with pytest.raises(SceneError, match="#37"):
-        generate_scene(r, tmp_path / "scene.ldtk")
+    scene, placed = generate_scene(r, tmp_path / "scene.ldtk")
+    save_scene(scene)
+    loaded = load_scene(tmp_path / "scene.ldtk")
+    found = {
+        e["iid"]: (lv, e)
+        for lv in loaded.project["levels"]
+        for ly in lv["layerInstances"] or []
+        for e in ly["entityInstances"]
+        if e["__identifier"] == "Portal"
+    }
+    a, b = portal_iids(r.seed, "house_1_door")
+    assert set(found) == {a, b}
+    for me, other in ((a, b), (b, a)):
+        _, entity = found[me]
+        ref = next(f for f in entity["fieldInstances"] if f["__identifier"] == "target")
+        value = cast(dict[str, object], ref["__value"])
+        assert value["entityIid"] == other
+        assert value["levelIid"] == found[other][0]["iid"]
+    (fl, fc), (tl, tc) = placed.portals["house_1_door"]
+    assert (fl, tl) == ("Village", "House1")
+    assert tuple(found[a][1]["__grid"]) == fc and tuple(found[b][1]["__grid"]) == tc
 
 
 def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
@@ -600,4 +626,57 @@ def test_example_layout_refuses_anchor_in_other_level() -> None:
     stray = EntityRule("stray", "Spawn", "plaza.center", level="House1")
     r = dataclasses.replace(r, portals=(), entities=(stray,))
     with pytest.raises(SceneError, match=r"^stray\.at："):
+        layout(r)
+
+
+@pytest.mark.law("GEN-8")
+@FAST
+@given(placeable_multi_village_rules(min_portals=1))
+def test_gen_8_portals_link_both_ends(r: Rules) -> None:
+    assume(r.portals)
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+        save_scene(scene)
+        loaded = load_scene(Path(tmp) / "scene.ldtk")
+    where: dict[str, tuple[str, tuple[int, ...], dict[str, Any]]] = {}
+    spots: list[tuple[str, tuple[int, ...]]] = []
+    for level in loaded.project["levels"]:
+        for layer in level["layerInstances"] or []:
+            for e in layer["entityInstances"]:
+                where[e["iid"]] = (level["identifier"], tuple(e["__grid"]), dict(e))
+                spots.append((level["identifier"], tuple(e["__grid"])))
+    assert len(set(spots)) == len(spots)  # 同一個 level 裡沒有兩個 entity 在同一格
+    level_iids = {lv["identifier"]: lv["iid"] for lv in loaded.project["levels"]}
+    for portal in r.portals:
+        start, end = portal_iids(r.seed, portal.name)
+        (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
+        assert where[start][:2] == (from_level, from_cell)  # 擺在錨點上
+        assert where[end][:2] == (to_level, to_cell)
+        assert (from_level, from_cell) != (to_level, to_cell)  # 兩端不在同一格
+        for me, other in ((start, end), (end, start)):  # EntityRef 互指，可以跨 level
+            entity = where[me][2]
+            assert entity["__identifier"] == portal.type
+            ref = next(f for f in entity["fieldInstances"] if f["__type"] == "EntityRef")
+            value = cast(dict[str, object], ref["__value"])
+            assert value["entityIid"] == other
+            assert value["levelIid"] == level_iids[where[other][0]]
+
+
+def test_example_portal_on_one_cell_road_is_refused() -> None:
+    """#37 驗收：一格長的路 start 與 end 是同一格；傳送點兩端在同一格要報錯（排了才知道）。"""
+    r = one_level_rules(
+        0,
+        "L",
+        (6, 4),
+        (Kind("k", 1, "#000000"),),
+        (AreaRule("house", "k", (2, 2), at=(2, 1)),),
+        (PathRule("road", "k", "house", "edge:north"),),
+        (),
+    )
+    portal = PortalRule("p", "Portal", "road.start", "road.end")
+    kind = EntityType("Portal", fields=(("target", "EntityRef"),))
+    r = dataclasses.replace(r, entity_types=(kind,), portals=(portal,))
+    placed_road = layout(dataclasses.replace(r, portals=())).anchors
+    assert placed_road["road.start"] == placed_road["road.end"]
+    with pytest.raises(SceneError, match=r"^p\.to："):
         layout(r)
