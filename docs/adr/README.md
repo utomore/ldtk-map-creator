@@ -41,6 +41,8 @@ decision-makers: [帳號]
 | [D-006](design/D-006-ldtk-model.md) | LDtk 檔用「空專案範本加精簡自寫型別」表示 |
 | [D-007](design/D-007-rules-file.md) | 規則檔用宣告式：地圖上每一塊東西寫成一個有名字的元素 |
 | [D-008](design/D-008-tweak-via-rules.md) | 從規則生成的場景地圖，微調一律改規則檔再重新生成 |
+| [D-009](design/D-009-multi-level-rules.md) | 規則檔用 `[[level]]` 陣列描述多個 level 與世界佈局 |
+| [D-010](design/D-010-entity-types-and-portals.md) | entity 類型由規則檔宣告，傳送點是一種元素 |
 
 ## 流程
 
