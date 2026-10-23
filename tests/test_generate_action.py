@@ -19,7 +19,14 @@ from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.render import preview_path, render_level
 from ldtk_map_creator.core.rules import Rules
 from ldtk_map_creator.core.scene import load_scene
-from tests.rule_strategies import placeable_village_rules, to_toml_text
+from tests.rule_strategies import (
+    placeable_multi_village_rules,
+    placeable_village_rules,
+    to_toml_text,
+)
+
+# 單一 level 與多個 level 的規則都要測到
+fitting = placeable_village_rules() | placeable_multi_village_rules()
 
 FAST = settings(max_examples=40, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
@@ -36,7 +43,7 @@ def _write_rules(r: Rules, path: Path) -> None:
 @pytest.mark.law("GEN-5")
 @pytest.mark.law("SCENE-5")
 @FAST
-@given(placeable_village_rules())
+@given(fitting)
 def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
@@ -47,10 +54,15 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
         assert saved is not None
         on_disk = load_scene(path)
         assert saved["content"] == record.content(on_disk)
-        with Image.open(preview_path(on_disk, r.level_name)) as image:
-            names = record.labels(saved, r.level_name)
-            expected = render_level(on_disk, r.level_name, labels=names)
-            assert image.tobytes() == expected.tobytes()
+        for level in r.levels:
+            # 每個 level 的名稱剛好是那個 level 的區域與路徑（不靠紀錄自己對答案）
+            here = {e.name for e in (*r.areas, *r.paths) if r.level_of(e).name == level.name}
+            assert {n for n, _, _ in record.labels(saved, level.name)} == here, level.name
+        for level in r.levels:  # 每個 level 都有預覽圖，跟重新 render 的一樣
+            with Image.open(preview_path(on_disk, level.name)) as image:
+                names = record.labels(saved, level.name)
+                expected = render_level(on_disk, level.name, labels=names)
+                assert image.tobytes() == expected.tobytes(), level.name
         before = _files(folder)
         result = actions.generate_scene(path)
         assert _files(folder) == before
@@ -67,7 +79,7 @@ edits = st.tuples(
 
 @pytest.mark.law("GEN-6")
 @FAST
-@given(placeable_village_rules(), edits, st.booleans())
+@given(fitting, edits, st.booleans())
 def test_gen_6_direct_edit_blocks_regeneration_until_forced(
     r: Rules, change: tuple[str, int, int], force_twice: bool
 ) -> None:

@@ -19,7 +19,7 @@ from .errors import SceneError
 from .layout import Layout
 from .scene import SceneMap
 
-VERSION = 2  # 2：加上預覽圖要寫的元素名稱
+VERSION = 3  # 2：加上預覽圖要寫的元素名稱；3：名稱照 level 分開、記下 level 的位置
 _DEF_NAMES = {"layers": "圖層", "entities": "entity ", "tilesets": "tileset "}
 _EXAMPLES = 3  # 每一層最多列幾格不同的例子
 
@@ -118,21 +118,26 @@ def _fields(owner: object) -> list[list[object]]:
     return [[f.get("defUid"), f.get("__value")] for f in found]
 
 
-def make_record(target: SceneMap, placed: Layout, level: str, areas: set[str]) -> dict[str, Any]:
-    """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素的位置（用來說誰移動了），
-    以及預覽圖上 `level` 要寫的元素名稱。
+def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, Any]:
+    """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素與 level 的位置（用來說誰移動了），
+    以及每個 level 的預覽圖要寫的元素名稱。
     """
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
-        elements[name] = _digest(sorted(cells))
+        elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
-        elements[name] = _digest([cell])
-    names = [[name, x, y] for name, x, y in name_positions(placed, areas)]
+        elements[name] = _digest([placed.level_of[name], [cell]])
+    # level 的名稱是識別字，不會有空白；加上前綴跟元素分開
+    for name, rect in placed.levels.items():
+        elements[f"level {name}"] = _digest(list(rect))
+    by_level: dict[str, list[list[object]]] = {name: [] for name in placed.levels}
+    for name, x, y in name_positions(placed, areas):
+        by_level[placed.level_of[name]].append([name, x, y])
     return {
         "version": VERSION,
         "content": content(target),
         "elements": elements,
-        "labels": {"level": level, "names": names},
+        "labels": by_level,
     }
 
 
@@ -159,10 +164,11 @@ def name_positions(placed: Layout, areas: set[str]) -> list[tuple[str, float, fl
 def labels(saved: dict[str, Any] | None, level: str) -> list[tuple[str, float, float]]:
     """從生成紀錄取出某個 level 要寫的元素名稱；沒有紀錄或不是生成的 level 就是空的。"""
     found = saved.get("labels") if saved else None
-    if not isinstance(found, dict) or cast(dict[str, Any], found).get("level") != level:
+    if not isinstance(found, dict):
         return []
     try:
-        names = [(str(n), float(x), float(y)) for n, x, y in cast(dict[str, Any], found)["names"]]
+        listed = cast(dict[str, Any], found).get(level, [])
+        names = [(str(n), float(x), float(y)) for n, x, y in listed]
     except (KeyError, TypeError, ValueError):
         return []
     # JSON 讀得進 NaN、Infinity，這種位置畫不出來，略過
@@ -282,8 +288,8 @@ def moved(
     return changed, sorted(after.keys() - before.keys()), sorted(before.keys() - after.keys())
 
 
-def _digest(cells: list[tuple[int, int]]) -> str:
-    return hashlib.sha256(json.dumps(cells).encode()).hexdigest()[:16]
+def _digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value).encode()).hexdigest()[:16]
 
 
 def _size(size: list[int]) -> str:

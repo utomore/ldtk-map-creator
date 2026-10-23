@@ -6,6 +6,8 @@
 - 靠近別人的區域跟其他區域至少隔 1 格（彼此靠近的兩個除外）；固定位置的區域只檢查不重疊；
   跟路徑只要不重疊。
 - 排不下一律丟 SceneError，訊息開頭是出錯的元素與欄位。
+- 多個 level（D-009）：先排世界佈局（level 彼此不重疊），再一個 level 一個 level 排元素；
+  元素只跟同一個 level 的元素互相擠。
 """
 
 import random
@@ -18,6 +20,7 @@ from .rules import (
     EDGE,
     AreaRule,
     Cell,
+    LevelRule,
     PathRule,
     Rules,
     Side,
@@ -32,7 +35,7 @@ _SIDE_NAMES: dict[str, str] = {"north": "北", "east": "東", "south": "南", "w
 
 @dataclass(frozen=True)
 class Layout:
-    """配置結果。"""
+    """配置結果；元素的格都是它所在 level 的格座標。"""
 
     # 區域與路徑佔的格，照排列順序
     cells: dict[str, frozenset[Cell]]
@@ -42,6 +45,10 @@ class Layout:
     entities: dict[str, Cell]
     # 每個元素找位置時，被哪些元素擋過
     pushed_by: dict[str, frozenset[str]]
+    # 每個 level 在世界上的位置與大小（格），照規則檔的順序
+    levels: dict[str, Rect]
+    # 每個元素（區域、路徑、entity）在哪個 level
+    level_of: dict[str, str]
 
 
 def placement_order(rules: Rules) -> tuple[Placeable, ...]:
@@ -66,44 +73,108 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
 
 
 def layout(rules: Rules) -> Layout:
-    """照規則排出每個元素；排不下丟 SceneError。"""
-    # 多個 level 的配置還沒做（#36）；先講清楚，不默默把元素排在同一個 level
-    if len(rules.levels) > 1:
-        raise SceneError(
-            f"level：有 {len(rules.levels)} 個 level；多個 level 的生成還不支援（#36）"
-        )
-    grid = _Grid(*rules.level_size)
+    """照規則排出世界佈局與每個元素；排不下丟 SceneError。"""
+    levels = place_levels(rules)
+    cells: dict[str, frozenset[Cell]] = {}
     anchors: dict[str, Cell] = {}
-    pushed_by: dict[str, frozenset[str]] = {}
-    for element in placement_order(rules):
-        rng = random.Random(f"{rules.seed}:{element.name}")
-        if isinstance(element, AreaRule):
-            rect, pushed = _place_area(element, grid, rng)
-            cells = _rect_cells(rect)
-            anchors |= _area_anchors(element.name, rect)
-            grid.areas.add(element.name)
-        else:
-            cells, start, end, pushed = _place_path(element, grid, rng)
-            anchors[f"{element.name}.start"] = start
-            anchors[f"{element.name}.end"] = end
-        grid.claim(element.name, cells)
-        pushed_by[element.name] = frozenset(pushed)
-
     entities: dict[str, Cell] = {}
-    taken: dict[Cell, str] = {}
+    pushed_by: dict[str, frozenset[str]] = {}
+    level_of: dict[str, str] = {}
+    order = placement_order(rules)
+    for level in rules.levels:
+        grid = _Grid(*level.size)
+        for element in order:
+            if rules.level_of(element).name != level.name:
+                continue
+            rng = random.Random(f"{rules.seed}:{element.name}")
+            if isinstance(element, AreaRule):
+                rect, pushed = _place_area(element, grid, rng)
+                found = _rect_cells(rect)
+                anchors |= _area_anchors(element.name, rect)
+                grid.areas.add(element.name)
+            else:
+                found, start, end, pushed = _place_path(element, grid, rng)
+                anchors[f"{element.name}.start"] = start
+                anchors[f"{element.name}.end"] = end
+            grid.claim(element.name, found)
+            pushed_by[element.name] = frozenset(pushed)
+            level_of[element.name] = level.name
+        cells |= grid.cells
+
+    taken: dict[tuple[str, Cell], str] = {}
     for entity in rules.entities:
+        level = rules.level_of(entity).name
         if isinstance(entity.at, tuple):
             cell = entity.at
         elif entity.at in anchors:
             cell = anchors[entity.at]
         else:
             raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
-        if cell in taken:
-            raise SceneError(f"{entity.name}.at：跟 {taken[cell]} 擺在同一格 {cell}")
-        taken[cell] = entity.name
+        if (level, cell) in taken:
+            raise SceneError(f"{entity.name}.at：跟 {taken[(level, cell)]} 擺在同一格 {cell}")
+        taken[(level, cell)] = entity.name
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
-    return Layout(dict(grid.cells), anchors, entities, pushed_by)
+        level_of[entity.name] = level
+    return Layout(cells, anchors, entities, pushed_by, levels, level_of)
+
+
+def place_levels(rules: Rules) -> dict[str, Rect]:
+    """世界佈局（D-009）：每個 level 在世界上的位置與大小（格），彼此不重疊。
+
+    先擺固定位置的（照檔案順序，第一個沒寫就在 (0, 0)），再照依賴順序擺靠近別人的：
+    貼著對象那一邊、隔 gap 格，優先跟對象置中對齊，被別的 level 擋住就往旁邊挪。
+    沒寫邊時用 seed 加 level 名稱的亂數挑。
+    """
+    placed: dict[str, Rect] = {}
+    for level in rules.levels:
+        if level.near is None:
+            x, y = level.at or (0, 0)
+            rect = (x, y, *level.size)
+            hit = [n for n, r in placed.items() if _rects_overlap(rect, r)]
+            if hit:
+                raise SceneError(f"level.{level.name}.at：跟 level {hit[0]} 重疊")
+            placed[level.name] = rect
+    rest = [lv for lv in rules.levels if lv.near is not None]
+    while rest:
+        ready = next((lv for lv in rest if lv.near in placed), None)
+        if ready is None:  # 從規則檔讀進來的不會成環；直接組出來的照樣報成 SceneError
+            stuck = rest[0]
+            raise SceneError(f"level.{stuck.name}.near：靠近的 level 不存在或互相靠近成環")
+        rest.remove(ready)
+        placed[ready.name] = _place_level_near(rules, ready, placed)
+    return {lv.name: placed[lv.name] for lv in rules.levels}
+
+
+def _place_level_near(rules: Rules, level: LevelRule, placed: dict[str, Rect]) -> Rect:
+    assert level.near is not None
+    tx, ty, tw, th = placed[level.near]
+    w, h = level.size
+    gap = level.gap
+    rng = random.Random(f"{rules.seed}:level:{level.name}")
+    every: list[Side] = ["north", "east", "south", "west"]
+    sides: list[Side] = [level.side] if level.side else rng.sample(every, 4)
+    for side in sides:
+        if side in ("north", "south"):
+            y = ty - gap - h if side == "north" else ty + th + gap
+            middle = tx + (tw - w) // 2
+            spots = [(x, y) for x in range(tx - w + 1, tx + tw)]
+            spots.sort(key=lambda s: (abs(s[0] - middle), s[0]))
+        else:
+            x = tx - gap - w if side == "west" else tx + tw + gap
+            middle = ty + (th - h) // 2
+            spots = [(x, y) for y in range(ty - h + 1, ty + th)]
+            spots.sort(key=lambda s: (abs(s[1] - middle), s[1]))
+        for sx, sy in spots:
+            rect = (sx, sy, w, h)
+            if not any(_rects_overlap(rect, r) for r in placed.values()):
+                return rect
+    where = f"{level.near} 的{_SIDE_NAMES[level.side]}邊" if level.side else f"{level.near} 旁邊"
+    raise SceneError(f"level.{level.name}.near：在 level {where}排不下 {w}x{h}（gap {gap}）")
+
+
+def _rects_overlap(a: Rect, b: Rect) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
 class _Grid:

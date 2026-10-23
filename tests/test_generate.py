@@ -26,14 +26,25 @@ from ldtk_map_creator.core.rules import (
 )
 from ldtk_map_creator.core.scene import load_scene, save_scene
 from tests.ldtk_schema import level_file_errors, load_json, project_errors
-from tests.rule_strategies import one_level_rules, placeable_village_rules, rules, village_rules
+from tests.rule_strategies import (
+    multi_village_rules,
+    one_level_rules,
+    placeable_multi_village_rules,
+    placeable_village_rules,
+    rules,
+    village_rules,
+)
 
 FAST = settings(max_examples=150, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
 # 通用的規則偏稀疏；混進像村莊的規則，才常有靠近別人、被擠開的區域
 spawn_rules = village_rules() | rules(entity_types=st.just("Spawn"), max_area=6)
 # 大多排得下的規則：GEN-3 以外的 law 只看排得下的情況，篩掉太多會讓 hypothesis 放棄
-fitting_rules = placeable_village_rules() | rules(entity_types=st.just("Spawn"), max_area=6)
+fitting_rules = (
+    placeable_village_rules()
+    | placeable_multi_village_rules()
+    | rules(entity_types=st.just("Spawn"), max_area=6)
+)
 STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 # 區域在對象的哪一邊，就往反方向推才碰得到對象
 DIRECTIONS = {"north": (0, 1), "south": (0, -1), "west": (1, 0), "east": (-1, 0)}
@@ -68,7 +79,7 @@ def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
             scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk", split=split)
             save_scene(scene)
             written.append(_files(Path(tmp)))
-            layers = scene.level(r.level_name)["layerInstances"] or []
+            layers = [ly for lv in scene.project["levels"] for ly in lv["layerInstances"] or []]
             iids.append(sorted(e["iid"] for ly in layers for e in ly["entityInstances"]))
     assert written[0] == written[1]
     assert iids[0] == sorted(element_iid(r.seed, e.name) for e in r.entities)
@@ -81,14 +92,17 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     placed = _try_layout(r)
     assume(placed is not None)
     assert placed is not None
-    width, height = r.level_size
-    owner: dict[tuple[int, int], str] = {}
+    # 每個 level 各自一張格子圖：元素的格是它所在 level 的格座標
+    owners: dict[str, dict[tuple[int, int], str]] = {name: {} for name in placed.levels}
     for name, cells in placed.cells.items():
         assert cells, name
+        level = placed.level_of[name]
+        assert level == r.level_of(next(e for e in (*r.areas, *r.paths) if e.name == name)).name
+        _, _, width, height = placed.levels[level]
         for x, y in cells:
             assert 0 <= x < width and 0 <= y < height, (name, x, y)
-            assert (x, y) not in owner, (name, owner.get((x, y)))
-            owner[(x, y)] = name
+            assert (x, y) not in owners[level], (name, owners[level].get((x, y)))
+            owners[level][(x, y)] = name
 
     areas = {a.name: a for a in r.areas}
     for area in r.areas:
@@ -97,6 +111,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         assert len(placed.cells[area.name]) == w * h
         if area.near is None:
             continue
+        owner = owners[placed.level_of[area.name]]
         # 跟其他區域至少隔一格；彼此靠近的兩個除外
         partners = {area.name, area.near} | {a.name for a in r.areas if a.near == area.name}
         ring = {(cx, cy) for cx in range(x - 1, x + w + 1) for cy in range(y - 1, y + h + 1)}
@@ -141,6 +156,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
             assert anchor in placed.cells[area.name] and anchor[axis] == line, (area.name, side)
     for path in r.paths:
         cells = placed.cells[path.name]
+        _, _, width, height = placed.levels[placed.level_of[path.name]]
         start, end = placed.anchors[f"{path.name}.start"], placed.anchors[f"{path.name}.end"]
         assert start in cells and end in cells, path.name
         # start 靠起點那頭，end 靠終點那頭
@@ -163,25 +179,42 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     for entity in r.entities:
         expected = entity.at if isinstance(entity.at, tuple) else placed.anchors[entity.at]
         assert placed.entities[entity.name] == expected
-    assert len(set(placed.entities.values())) == len(placed.entities)
+        assert placed.level_of[entity.name] == r.level_of(entity).name
+    spots = [(placed.level_of[n], c) for n, c in placed.entities.items()]
+    assert len(set(spots)) == len(spots)  # 同一個 level 裡不擺在同一格
 
     with tempfile.TemporaryDirectory() as tmp:
         scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk")
         save_scene(scene)
-        level = load_scene(Path(tmp) / "scene.ldtk").level(r.level_name)
+        loaded = load_scene(Path(tmp) / "scene.ldtk")
     value = {k.name: k.value for k in r.kinds}
     kind = {e.name: e.kind for e in (*r.areas, *r.paths)}
-    layers = level["layerInstances"] or []
-    intgrid = next(ly for ly in layers if ly["__type"] == "IntGrid")
-    expected_csv = [
-        value[kind[owner[(cx, cy)]]] if (cx, cy) in owner else 0
-        for cy in range(height)
-        for cx in range(width)
-    ]
-    assert intgrid["intGridCsv"] == expected_csv
     by_iid = {element_iid(r.seed, e.name): e.name for e in r.entities}
-    got = {by_iid[e["iid"]]: tuple(e["__grid"]) for ly in layers for e in ly["entityInstances"]}
+    got: dict[str, tuple[int, ...]] = {}
+    grid = loaded.project["defaultGridSize"]
+    for level_name, (lx, ly, width, height) in placed.levels.items():
+        level = loaded.level(level_name)
+        assert (level["worldX"], level["worldY"]) == (lx * grid, ly * grid)
+        owner = owners[level_name]
+        layers = level["layerInstances"] or []
+        intgrid = next(layer for layer in layers if layer["__type"] == "IntGrid")
+        expected_csv = [
+            value[kind[owner[(cx, cy)]]] if (cx, cy) in owner else 0
+            for cy in range(height)
+            for cx in range(width)
+        ]
+        assert intgrid["intGridCsv"] == expected_csv, level_name
+        for layer in layers:
+            for e in layer["entityInstances"]:
+                got[by_iid[e["iid"]]] = tuple(e["__grid"])
+                assert placed.level_of[by_iid[e["iid"]]] == level_name
     assert got == placed.entities
+    # 宣告的 entity 類型變成定義：名稱、顏色、大小、欄位都照規則
+    defs = {d["identifier"]: d for d in loaded.project["defs"]["entities"]}
+    for declared in r.entity_types:
+        made = defs[declared.name]
+        assert (made["color"], (made["width"], made["height"])) == (declared.color, declared.size)
+        assert [(f["identifier"], f["__type"]) for f in made["fieldDefs"]] == list(declared.fields)
 
 
 @pytest.mark.law("GEN-3")
@@ -200,9 +233,10 @@ def test_gen_3_failure_names_an_element(r: Rules) -> None:
 @st.composite
 def changed_area(draw: st.DrawFn) -> tuple[Rules, Rules, str]:
     """改一個區域的一個欄位：位置、大小、靠近的一邊或間隔。"""
-    r = draw(village_rules())
+    r = draw(village_rules() | multi_village_rules())
+    assume(r.areas)
     x = draw(st.sampled_from(r.areas))
-    width, height = r.level_size
+    width, height = r.level_of(x).size
     w, h = x.size
     if x.at is not None:
         field = draw(st.sampled_from(["at", "size"]))
@@ -461,31 +495,27 @@ def test_example_unparsed_rules_raise_scene_error(change: str, where: str) -> No
         layout(r)
 
 
-def test_example_multi_level_generation_not_yet(tmp_path: Path) -> None:
-    """多個 level 的生成還沒做（#36）：講清楚，不默默只生成第一個 level。"""
+def test_example_village_with_house_interior(tmp_path: Path) -> None:
+    """典型（D-009、D-010）：兩個 level、宣告的 entity 類型；House1 在村莊東邊隔 2 格、置中。"""
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
-    with pytest.raises(SceneError, match="#36"):
+    r = dataclasses.replace(r, portals=())  # 傳送點是 #37
+    scene, placed = generate_scene(r, tmp_path / "scene.ldtk")
+    vx, vy, vw, vh = placed.levels["Village"]
+    hx, hy, _, hh = placed.levels["House1"]
+    assert (vx, vy) == (0, 0) and hx == vx + vw + 2
+    assert hy == vy + (vh - hh) // 2
+    house = scene.level("House1")
+    assert (house["worldX"], house["worldY"]) == (hx * 16, hy * 16)
+    portal = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Portal")
+    assert [f["identifier"] for f in portal["fieldDefs"]] == ["target"]
+    assert placed.level_of["room"] == "House1"
+
+
+def test_example_portal_generation_not_yet(tmp_path: Path) -> None:
+    """傳送點的生成還沒做（#37）：講清楚，不默默丟掉。"""
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    with pytest.raises(SceneError, match="#37"):
         generate_scene(r, tmp_path / "scene.ldtk")
-
-
-@pytest.mark.parametrize(
-    ("extra", "issue"),
-    [
-        ('[entity_types]\nSign = { color = "#FFFFFF" }\n', "#36"),
-        (
-            '[entity_types]\nPortal = { fields = { target = "EntityRef" } }\n'
-            '[[portal]]\nname = "p"\nfrom = "plaza.north"\nto = "plaza.south"\n',
-            "#37",
-        ),
-    ],
-    ids=["entity-types", "portal"],
-)
-def test_example_unsupported_parts_are_refused(extra: str, issue: str, tmp_path: Path) -> None:
-    """只有一個 level 時，entity 類型與傳送點的生成也還沒做（#36、#37）：講清楚，不默默丟掉。"""
-    path = tmp_path / "x.rules.toml"
-    path.write_text(EXAMPLE.read_text(encoding="utf-8") + extra, encoding="utf-8")
-    with pytest.raises(SceneError, match=issue):
-        generate_scene(load_rules(path), tmp_path / "scene.ldtk")
 
 
 def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
@@ -509,3 +539,49 @@ def test_example_layout_ignores_declared_types() -> None:
     r = load_rules(EXAMPLE)
     r = dataclasses.replace(r, entity_types=(EntityType("Sign"),))
     assert layout(r).cells
+
+
+@pytest.mark.law("GEN-7")
+@FAST
+@given(placeable_multi_village_rules())
+def test_gen_7_world_layout(r: Rules) -> None:
+    placed = layout(r)
+    rects = placed.levels
+    assert list(rects) == [lv.name for lv in r.levels]
+    names = list(rects)
+    for i, a in enumerate(names):  # level 彼此不重疊
+        ax, ay, aw, ah = rects[a]
+        assert (aw, ah) == r.levels[i].size
+        for b in names[i + 1 :]:
+            bx, by, bw, bh = rects[b]
+            assert not (ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah), (a, b)
+    for level in r.levels:
+        x, y, w, h = rects[level.name]
+        if level.near is None:
+            assert (x, y) == (level.at or (0, 0))
+            continue
+        # 貼著對象那一邊、剛好隔 gap 格，而且兩邊有重疊的地方（不是斜對角）
+        tx, ty, tw, th = rects[level.near]
+        gaps = {
+            "north": (ty - (y + h), x < tx + tw and tx < x + w),
+            "south": (y - (ty + th), x < tx + tw and tx < x + w),
+            "west": (tx - (x + w), y < ty + th and ty < y + h),
+            "east": (x - (tx + tw), y < ty + th and ty < y + h),
+        }
+        sides = [s for s, (g, facing) in gaps.items() if g == level.gap and facing]
+        assert sides and (level.side is None or level.side in sides), (level.name, gaps)
+
+
+def test_example_other_levels_stay_when_one_changes() -> None:
+    """改一個 level 裡的區域，別的 level 的元素完全不動。
+
+    每個元素用自己的亂數，各 level 分開排。
+    """
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    r = dataclasses.replace(r, portals=())
+    before = layout(r)
+    areas = tuple(dataclasses.replace(a, size=(4, 4)) if a.name == "room" else a for a in r.areas)
+    after = layout(dataclasses.replace(r, areas=areas))
+    for name in ("plaza", "house_1"):
+        assert before.cells[name] == after.cells[name]
+    assert before.levels == after.levels

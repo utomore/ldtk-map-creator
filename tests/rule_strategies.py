@@ -436,3 +436,99 @@ def multi_rules(draw: st.DrawFn) -> Rules:
         tuple(types),
         tuple(portals),
     )
+
+
+def _prefixed(r: Rules, prefix: str, level: str) -> Rules:
+    """把一份單一 level 的規則搬到 `level`：元素名稱加上前綴，指向的名稱跟著改。"""
+
+    def ref(name: str) -> str:
+        return name if name.startswith("edge:") else prefix + name
+
+    def anchor(at: str | tuple[int, int]) -> str | tuple[int, int]:
+        return at if isinstance(at, tuple) else prefix + at
+
+    areas = tuple(
+        replace(a, name=prefix + a.name, near=ref(a.near) if a.near else None, level=level)
+        for a in r.areas
+    )
+    paths = tuple(
+        replace(p, name=prefix + p.name, start=ref(p.start), to=ref(p.to), level=level)
+        for p in r.paths
+    )
+    entities = tuple(
+        replace(e, name=prefix + e.name, at=anchor(e.at), level=level) for e in r.entities
+    )
+    return replace(r, areas=areas, paths=paths, entities=entities)
+
+
+@st.composite
+def multi_village_rules(draw: st.DrawFn) -> Rules:
+    """2～3 個 level，每個 level 一套像村莊的元素；第二個以後的 level 靠近前一個或固定在格位上。
+
+    有時再宣告一種 entity 類型，把一些 Spawn 換成它。
+    """
+    count = draw(st.integers(2, 3))
+    parts = [draw(village_rules()) for _ in range(count)]
+    levels: list[LevelRule] = []
+    used: list[tuple[int, int]] = []
+    for i, part in enumerate(parts):
+        name, size = f"L{i}", part.level_size
+        if i == 0:
+            levels.append(LevelRule(name, size))
+        elif draw(st.booleans()):
+            side = draw(st.none() | st.sampled_from(SIDES))
+            near = f"L{draw(st.integers(0, i - 1))}"
+            levels.append(LevelRule(name, size, near=near, side=side, gap=draw(st.integers(0, 3))))
+        else:
+            # 固定格位彼此隔 100 格，village 最大 32 格，不會重疊；避開 L0 的 (0, 0)
+            slots = [
+                (x * 100, y * 100) for x in range(-2, 3) for y in range(-2, 3) if (x, y) != (0, 0)
+            ]
+            slot = draw(st.sampled_from([s for s in slots if s not in used]))
+            used.append(slot)
+            levels.append(LevelRule(name, size, at=slot))
+    moved = [_prefixed(part, f"l{i}_", f"L{i}") for i, part in enumerate(parts)]
+    types: tuple[EntityType, ...] = ()
+    entities = [e for part in moved for e in part.entities]
+    if draw(st.booleans()):
+        types = (EntityType("Sign", "#FFFFFF", (16, 16), (("label", "String"),)),)
+        entities = [replace(e, type="Sign") if draw(st.booleans()) else e for e in entities]
+    return Rules(
+        parts[0].seed,
+        tuple(levels),
+        parts[0].kinds,
+        tuple(a for part in moved for a in part.areas),
+        tuple(p for part in moved for p in part.paths),
+        tuple(entities),
+        types,
+        (),
+    )
+
+
+@st.composite
+def placeable_multi_village_rules(draw: st.DrawFn) -> Rules:
+    """排得下的多 level 規則：排不下就拿掉出錯的元素再試（見 placeable_village_rules）。"""
+    r = draw(multi_village_rules())
+    while True:
+        try:
+            layout(r)
+        except SceneError as error:
+            head = str(error).split("：", 1)[0]
+            if head.startswith("level."):
+                # 指定的那一邊被別的 level 佔滿：改成固定在遠處、彼此不重疊的格位
+                stuck = head.split(".")[1]
+                index = [lv.name for lv in r.levels].index(stuck)
+                far = (1000 + 100 * index, 1000)
+                levels = tuple(
+                    LevelRule(lv.name, lv.size, at=far) if lv.name == stuck else lv
+                    for lv in r.levels
+                )
+                r = replace(r, levels=levels)
+                continue
+            name = head.split(".", 1)[0]
+            smaller = _without(r, name)
+            if smaller == r:  # 訊息沒點名元素：不是排不下，是策略或配置器的錯
+                raise
+            r = smaller
+            continue
+        return r

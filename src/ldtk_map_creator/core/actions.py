@@ -23,7 +23,7 @@ from . import render as rendering
 from .derived import cell_count, refresh_derived
 from .errors import SceneError
 from .files import atomic_write
-from .rules import load_rules
+from .rules import Rules, load_rules
 from .scene import SceneMap
 
 ACTIONS = (
@@ -424,8 +424,8 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     areas = {a.name for a in rules.areas}
-    new_record = record.make_record(target, placed, rules.level_name, areas)
-    summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
+    new_record = record.make_record(target, placed, areas)
+    summary = _generate_summary(rules, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
     # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
     kept = {lv["identifier"].lower() for lv in target.project["levels"]}
@@ -509,12 +509,11 @@ def _load_current(path: Path, force: bool) -> SceneMap | None:
         raise
 
 
-def _generate_summary(
-    level: str, size: tuple[int, int], previous: dict[str, Any] | None, new: dict[str, Any]
-) -> str:
+def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[str, Any]) -> str:
     changed, added, removed = record.moved(previous, new)
-    count = len(new["elements"])
-    lines = [f"照規則生成 {level}（{size[0]}x{size[1]} 格），{count} 個元素"]
+    count = len(new["elements"]) - len(rules.levels)
+    levels = "、".join(f"{lv.name}（{lv.size[0]}x{lv.size[1]} 格）" for lv in rules.levels)
+    lines = [f"照規則生成 {levels}，{count} 個元素"]
     if previous is None:
         return lines[0]
     if changed:
