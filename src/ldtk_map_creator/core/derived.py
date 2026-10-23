@@ -5,11 +5,13 @@ LDtk 存檔時不會替沒改動的 level 補欄位（D-006 實測），
 新建的物件把 `iid` 設成 `""`、`uid` 設成負數，交給這裡配發。
 """
 
+import copy
 import math
+from typing import cast
 
 from .errors import SceneError
 from .ids import new_iid
-from .model import EntityDef, LayerDef, Level, Project
+from .model import EntityDef, EntityInstance, LayerDef, Level, Project
 
 UNASSIGNED_UID = -1
 
@@ -19,16 +21,20 @@ def cell_count(px: int, grid: int) -> int:
     return math.ceil(px / grid)
 
 
-def refresh_derived(project: Project) -> None:
-    """配發缺的 `iid` 與 `uid`，再依 defs 與本體欄位重算所有 `__` 欄位。"""
+def refresh_derived(project: Project, only: Level | None = None) -> None:
+    """配發缺的 `iid` 與 `uid`，再依 defs 與本體欄位重算 `__` 欄位。
+
+    給 `only` 時只重算那個 level 的圖層與 entity（level 內的編輯用），不動相鄰關係。
+    """
     _assign_ids(project)
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
     tileset_paths = {t["uid"]: t["relPath"] for t in project["defs"]["tilesets"]}
-    for level in project["levels"]:
+    for level in project["levels"] if only is None else [only]:
         _refresh_level(project, level, layer_defs, entity_defs, tileset_paths)
-        manual = _manual_layout(project)
-        level["__neighbours"] = _neighbours(level, project["levels"]) if manual else []
+        if only is None:
+            manual = _manual_layout(project)
+            level["__neighbours"] = _neighbours(level, project["levels"]) if manual else []
 
 
 def _assign_ids(project: Project) -> None:
@@ -102,12 +108,23 @@ def _refresh_level(
             entity["__pivot"] = [edef["pivotX"], edef["pivotY"]]
             entity["__tags"] = list(edef["tags"])
             entity["__smartColor"] = edef["color"]
+            # LDtk 的 smart tile 先看 Tile 欄位、再看定義的 tileRect；
+            # 有 Tile 欄位的 entity 保留 LDtk 算好的值，其餘照定義
+            if not _has_tile_field(entity):
+                entity["__tile"] = copy.deepcopy(edef["tileRect"])
             if _manual_layout(project):
                 entity["__worldX"] = level["worldX"] + entity["px"][0]
                 entity["__worldY"] = level["worldY"] + entity["px"][1]
             else:
                 entity["__worldX"] = None
                 entity["__worldY"] = None
+
+
+def _has_tile_field(entity: EntityInstance) -> bool:
+    fields = cast(list[dict[str, object]], entity["fieldInstances"])
+    return any(
+        str(f.get("__type", "")).endswith("Tile>") or f.get("__type") == "Tile" for f in fields
+    )
 
 
 def _manual_layout(project: Project) -> bool:
@@ -118,6 +135,11 @@ def _manual_layout(project: Project) -> bool:
 def _cell(px: int, pivot: float, grid: int) -> int:
     """entity 所在的格；照 LDtk 1.5.3 的 EntityInstance.getCx：pivot 為 1 時先減 1，再截斷取整。"""
     return int((px + (-1 if pivot == 1 else 0)) / grid)
+
+
+def cell_to_px(cell: int, pivot: float, grid: int) -> int:
+    """格子座標轉成 LDtk 的 px（pivot 點的位置）；是 `_cell` 的反函數。"""
+    return cell * grid + int(pivot * grid)
 
 
 def _depth_direction(depth: int, other_depth: int) -> str:
