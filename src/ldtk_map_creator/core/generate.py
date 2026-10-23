@@ -27,7 +27,13 @@ def generate_scene(
 
     `overwrite=True` 時磁碟上已經有這個場景地圖也照樣建，寫檔時蓋掉（重新生成）。
     """
-    placed = layout(rules)
+    placed = layout(rules)  # 多個 level 的配置還沒做，配置器先擋（#36）
+    # 傳送點（#37）與 entity 類型（#36）的生成還沒做；先講清楚，不默默丟掉
+    if rules.portals:
+        raise SceneError(f"{rules.portals[0].name}.from：傳送點的生成還不支援（#37）")
+    if rules.entity_types:
+        name = rules.entity_types[0].name
+        raise SceneError(f"entity_types.{name}：entity 類型的生成還不支援（#36）")
     scene = new_scene(path, split=split, overwrite=overwrite)
     project = scene.project
     for layer_type in ("IntGrid", "Entities"):
@@ -41,7 +47,17 @@ def generate_scene(
     ]
     project["levels"].clear()  # 範本附的 Level_0
     width, height = rules.level_size
-    level = add_level(scene, rules.level_name, width_cells=width, height_cells=height)
+    grid = project["defaultGridSize"]
+    # 世界座標以格為單位（D-009）；只有一個 level，所以不會有 near。#36 改成從配置結果取
+    at = rules.levels[0].at or (0, 0)
+    level = add_level(
+        scene,
+        rules.level_name,
+        width_cells=width,
+        height_cells=height,
+        world_x=at[0] * grid,
+        world_y=at[1] * grid,
+    )
     name = rules.level_name
 
     value = {k.name: k.value for k in rules.kinds}

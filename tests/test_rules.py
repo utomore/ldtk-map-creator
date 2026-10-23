@@ -1,6 +1,8 @@
 """RULE-1、RULE-2：讀取並檢查規則檔。"""
 
 import copy
+import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +14,15 @@ from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.rules import (
     AreaRule,
     EntityRule,
+    EntityType,
+    LevelRule,
     PathRule,
+    PortalRule,
     Rules,
     load_rules,
     parse_rules,
 )
-from tests.rule_strategies import rules, to_toml_data, width_limit
+from tests.rule_strategies import multi_rules, rules, to_toml_data, width_limit
 
 FAST = settings(max_examples=300, deadline=None)
 BROKEN = settings(max_examples=1000, deadline=None)
@@ -28,9 +33,10 @@ BAD_VALUES: list[object] = [True, 1.5, {}, [], "x?"]
 
 @pytest.mark.law("RULE-1")
 @FAST
-@given(rules())
-def test_valid_rules_round_trip(expected: Rules) -> None:
-    assert parse_rules(to_toml_data(expected)) == expected
+@given(rules() | multi_rules(), st.booleans())
+def test_valid_rules_round_trip(expected: Rules, array: bool) -> None:
+    # 只有一個 level 時，M2 的 [level] 與 D-009 的 [[level]] 兩種寫法都讀得回原樣
+    assert parse_rules(to_toml_data(expected, array=array)) == expected
 
 
 def _elements(data: dict[str, Any]) -> list[tuple[str, int, dict[str, Any]]]:
@@ -188,9 +194,113 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             return data, f"{entity['name']}.at"
 
 
+@st.composite
+def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
+    """多個 level、entity 類型、傳送點的規則弄壞一處（D-009、D-010）。"""
+    good = draw(multi_rules())
+    data = copy.deepcopy(to_toml_data(good, array=True))
+    levels: list[dict[str, Any]] = data["level"]
+    elements = [(k, e) for k, _, e in _elements(data)]
+    portals: list[dict[str, Any]] = data.get("portal", [])
+    types: dict[str, dict[str, Any]] = data.get("entity_types", {})
+    options = ["level_dup", "type_bad_color", "type_bad_field", "level_key"]
+    if len(levels) > 1:
+        options += ["level_near_missing", "level_no_position", "level_cycle"]
+        if elements:
+            options.append("element_no_level")
+    if elements:
+        options.append("element_level_unknown")
+    first = levels[0]["name"]  # 沒寫 level 的元素在第一個 level
+    across = [
+        (e, other)
+        for k, e in elements
+        if k in ("area", "path")
+        for k2, other in elements
+        if k2 in ("area", "path") and other.get("level", first) != e.get("level", first)
+    ]
+    if across:
+        options.append("cross_level_ref")
+    if portals:
+        options += ["portal_anchor", "portal_same_ends", "portal_type"]
+    match draw(st.sampled_from(options)):
+        case "level_dup":
+            if len(levels) == 1:
+                levels.append(dict(levels[0], name=levels[0]["name"].swapcase(), at=[0, 0]))
+                levels[-1].pop("near", None)
+                if levels[-1]["name"] == levels[0]["name"]:  # 沒有大小寫的名字（例如 _1）
+                    return data | {"extra": 1}, "規則檔.extra"
+                return data, f"level.{levels[-1]['name']}.name"
+            levels[-1]["name"] = levels[0]["name"].upper()
+            return data, f"level.{levels[-1]['name']}.name|level.{levels[0]['name']}.name"
+        case "level_key":
+            draw(st.sampled_from(levels))["extra"] = 1
+            return data, "|".join(f"level.{lv['name']}.extra" for lv in levels)
+        case "type_bad_color":
+            if not types:
+                return data | {"extra": 1}, "規則檔.extra"
+            name = draw(st.sampled_from(sorted(types)))
+            types[name]["color"] = "blue"
+            return data, f"entity_types.{name}.color"
+        case "type_bad_field":
+            if not types:
+                return data | {"extra": 1}, "規則檔.extra"
+            name = draw(st.sampled_from(sorted(types)))
+            types[name]["fields"]["zz"] = "Color"
+            return data, f"entity_types.{name}.fields.zz"
+        case "level_near_missing":
+            level = draw(st.sampled_from(levels[1:]))
+            level.pop("at", None)
+            level["near"] = MISSING
+            return data, f"level.{level['name']}.near"
+        case "level_no_position":
+            level = draw(st.sampled_from(levels[1:]))
+            for key in ("at", "near", "side", "gap"):
+                level.pop(key, None)
+            return data, f"level.{level['name']}.at"
+        case "level_cycle":
+            # 第一個 level 改成靠近第二個，第二個改成靠近第一個
+            first, second = levels[0], levels[1]
+            for level, other in ((first, second), (second, first)):
+                for key in ("at", "near", "side", "gap"):
+                    level.pop(key, None)
+                level["near"] = other["name"]
+            return data, f"level.{first['name']}.near|level.{second['name']}.near"
+        case "element_no_level":
+            _, element = draw(st.sampled_from(elements))
+            element.pop("level", None)
+            return data, f"{element['name']}.level"
+        case "element_level_unknown":
+            _, element = draw(st.sampled_from(elements))
+            element["level"] = MISSING
+            return data, f"{element['name']}.level"
+        case "cross_level_ref":
+            element, other = draw(st.sampled_from(across))
+            field = "near" if "near" in element or "at" in element else "from"
+            if field == "near":
+                element.pop("at", None)
+                element.pop("side", None)
+                element.pop("gap", None)
+            element[field] = other["name"]
+            return data, f"{element['name']}.{field}"
+        case "portal_anchor":
+            portal = draw(st.sampled_from(portals))
+            field = draw(st.sampled_from(["from", "to"]))
+            portal[field] = f"{MISSING}.center"
+            return data, f"{portal['name']}.{field}"
+        case "portal_same_ends":
+            portal = draw(st.sampled_from(portals))
+            portal["to"] = portal["from"]
+            return data, f"{portal['name']}.to"
+        case _:  # portal_type
+            portal = draw(st.sampled_from(portals))
+            plain = [n for n, ty in types.items() if "EntityRef" not in ty["fields"].values()]
+            portal["type"] = draw(st.sampled_from([*plain, "ZzNope"]))
+            return data, f"{portal['name']}.type"
+
+
 @pytest.mark.law("RULE-2")
 @BROKEN
-@given(broken())
+@given(broken() | broken_multi())
 def test_broken_rules_are_rejected(case: tuple[dict[str, Any], str]) -> None:
     data, wheres = case
     with pytest.raises(SceneError) as error:
@@ -232,3 +342,93 @@ def test_23_long_reference_chain() -> None:
         "area": areas,
     }
     assert len(parse_rules(data).areas) == 3000
+
+
+def test_example_village_with_house() -> None:
+    """典型（D-009、D-010）：兩個 level、一種 entity 類型、一個跨 level 的傳送點（type 省略）。"""
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    assert [lv.name for lv in r.levels] == ["Village", "House1"]
+    assert r.levels[1] == LevelRule("House1", (12, 10), near="Village", side="east", gap=2)
+    assert r.entity_types == (
+        EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"),)),
+    )
+    assert r.portals == (PortalRule("house_1_door", "Portal", "house_1.south", "room.south"),)
+    assert r.level_of(r.areas[2]).name == "House1"
+
+
+@pytest.mark.parametrize(
+    ("case", "where"),
+    [("area-near-other-level", "house_1.near"), ("entity-at-other-level", "spawn.at")],
+)
+def test_example_only_portals_cross_levels(case: str, where: str) -> None:
+    """只有傳送點能跨 level：區域靠近、entity 擺在別的 level 的東西都報錯。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    if case == "area-near-other-level":
+        data["area"][1]["near"] = "room"  # house_1 在 Village，room 在 House1
+    else:
+        spawn = {"name": "spawn", "type": "Spawn", "at": "room.center", "level": "Village"}
+        data["entity"] = [spawn]
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+        parse_rules(data)
+
+
+@pytest.mark.parametrize(
+    ("case", "where"),
+    [
+        ("portal-same-cell", "door_portal.to"),
+        ("type-named-spawn", "entity_types.spawn"),
+    ],
+)
+def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
+    """傳送點兩端在同一格、類型跟範本的 Spawn 撞名，都報錯。
+
+    1 格高的區域，north 與 south 是同一格。
+    """
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    if case == "portal-same-cell":
+        door = {"name": "door", "level": "Village", "kind": "house", "size": [3, 1], "at": [0, 0]}
+        data["area"].append(door)
+        data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
+    else:
+        data["entity_types"]["spawn"] = {}
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+        parse_rules(data)
+
+
+def test_example_level_at_can_be_negative() -> None:
+    """level 的世界座標可以是負的（LDtk 的 Free 佈局）。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    data["level"][1] = {"name": "House1", "size": [12, 10], "at": [-20, -5]}
+    assert parse_rules(data).levels[1].at == (-20, -5)
+
+
+def test_example_level_of_unknown_level_is_scene_error() -> None:
+    """沒經過檢查、直接組出來的規則指向不存在的 level：丟 SceneError，不丟 StopIteration。"""
+    r = load_rules(EXAMPLE)
+    lost = AreaRule("lost", "plaza", (1, 1), at=(0, 0), level="Nope")
+    with pytest.raises(SceneError, match=r"^lost\.level"):
+        r.level_of(lost)
+
+
+def test_example_fixed_levels_must_not_overlap() -> None:
+    """兩個都用 at 固定位置的 level 重疊：讀規則檔時就報錯（D-009：level 彼此不重疊）。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    data["level"][1] = {
+        "name": "House1",
+        "size": [12, 10],
+        "at": [10, 10],
+    }  # Village 在 (0,0) 40x30
+    with pytest.raises(SceneError, match=r"^level\.House1\.at："):
+        parse_rules(data)
+
+
+def test_example_single_table_level_takes_at() -> None:
+    """M2 的 `[level]` 寫法也能寫 at，跟 `[[level]]` 一樣。"""
+    text = EXAMPLE.read_text(encoding="utf-8").replace(
+        "size = [40, 30]  # 格", "size = [40, 30]\nat = [3, -2]"
+    )
+    assert parse_rules(tomllib.loads(text)).levels[0].at == (3, -2)

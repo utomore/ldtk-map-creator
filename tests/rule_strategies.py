@@ -15,8 +15,11 @@ from ldtk_map_creator.core.rules import (
     SIDES,
     AreaRule,
     EntityRule,
+    EntityType,
     Kind,
+    LevelRule,
     PathRule,
+    PortalRule,
     Rules,
 )
 from ldtk_map_creator.core.scene import RESERVED_NAMES
@@ -31,6 +34,22 @@ def width_limit(to: str, level_size: tuple[int, int]) -> int:
         return height
     return max(width, height)
 
+
+def one_level_rules(
+    seed: int,
+    level: str,
+    size: tuple[int, int],
+    kinds: tuple[Kind, ...],
+    areas: tuple[AreaRule, ...],
+    paths: tuple[PathRule, ...],
+    entities: tuple[EntityRule, ...],
+) -> Rules:
+    """只有一個 level、沒有 entity 類型與傳送點的規則（M2 的形狀）。"""
+    return Rules(seed, (LevelRule(level, size),), kinds, areas, paths, entities, (), ())
+
+
+# 固定位置 level 的格位：彼此隔 25 格，level 最大 20 格，避開第一個 level 預設的 (0, 0)
+SLOTS = [(x * 25, y * 25) for x in range(-3, 4) for y in range(-3, 4) if (x, y) != (0, 0)]
 
 names = st.from_regex(r"[A-Za-z_][A-Za-z0-9_]{0,8}", fullmatch=True)
 
@@ -103,16 +122,40 @@ def rules(
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     # level 名稱拆開存時就是檔名，Windows 的裝置名稱不合法（RULE-2 會擋）
     level = draw(names.filter(lambda n: n.lower() not in RESERVED_NAMES))
-    return Rules(seed, level, (width, height), kinds, tuple(areas), tuple(paths), tuple(entities))
+    return one_level_rules(
+        seed, level, (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
+    )
 
 
-def to_toml_data(r: Rules) -> dict[str, Any]:
-    """規則資料寫成 TOML 再用 tomllib 讀出來的樣子；選填欄位是預設值時不寫。"""
+def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
+    """規則資料寫成 TOML 再用 tomllib 讀出來的樣子；選填欄位是預設值時不寫。
+
+    只有一個沒擺位置的 level 時寫成 M2 的 `[level]`；`array=True` 或多個 level 時寫成 `[[level]]`。
+    """
+    levels: list[dict[str, Any]] = []
+    for lv in r.levels:
+        level: dict[str, Any] = {"name": lv.name, "size": list(lv.size)}
+        if lv.at is not None:
+            level["at"] = list(lv.at)
+        elif lv.near is not None:
+            level["near"] = lv.near
+            if lv.side is not None:
+                level["side"] = lv.side
+            if lv.gap != DEFAULT_GAP:
+                level["gap"] = lv.gap
+        levels.append(level)
+    simple = len(levels) == 1 and set(levels[0]) == {"name", "size"} and not array
     data: dict[str, Any] = {
         "seed": r.seed,
-        "level": {"name": r.level_name, "size": list(r.level_size)},
+        "level": levels[0] if simple else levels,
         "kinds": {k.name: {"value": k.value, "color": k.color} for k in r.kinds},
     }
+
+    def placed(element: AreaRule | PathRule | EntityRule, item: dict[str, Any]) -> dict[str, Any]:
+        if element.level is not None:
+            item["level"] = element.level
+        return item
+
     areas: list[dict[str, Any]] = []
     for a in r.areas:
         area: dict[str, Any] = {"name": a.name, "kind": a.kind, "size": list(a.size)}
@@ -124,18 +167,33 @@ def to_toml_data(r: Rules) -> dict[str, Any]:
                 area["side"] = a.side
             if a.gap != DEFAULT_GAP:
                 area["gap"] = a.gap
-        areas.append(area)
+        areas.append(placed(a, area))
     paths: list[dict[str, Any]] = []
     for p in r.paths:
         path: dict[str, Any] = {"name": p.name, "kind": p.kind, "from": p.start, "to": p.to}
         if p.width != 1:
             path["width"] = p.width
-        paths.append(path)
+        paths.append(placed(p, path))
     entities = [
-        {"name": e.name, "type": e.type, "at": e.at if isinstance(e.at, str) else list(e.at)}
+        placed(
+            e, {"name": e.name, "type": e.type, "at": e.at if isinstance(e.at, str) else list(e.at)}
+        )
         for e in r.entities
     ]
-    for key, items in (("area", areas), ("path", paths), ("entity", entities)):
+    with_refs = [et for et in r.entity_types if et.ref_fields()]
+    portals: list[dict[str, Any]] = []
+    for portal in r.portals:
+        item: dict[str, Any] = {"name": portal.name, "from": portal.start, "to": portal.to}
+        # 只有一種能互指的類型時可以不寫 type；這裡用名稱的長度決定寫不寫，兩種寫法都測到
+        if not (len(with_refs) == 1 and len(portal.name) % 2 == 0):
+            item["type"] = portal.type
+        portals.append(item)
+    if r.entity_types:
+        data["entity_types"] = {
+            et.name: {"color": et.color, "size": list(et.size), "fields": dict(et.fields)}
+            for et in r.entity_types
+        }
+    for key, items in (("area", areas), ("path", paths), ("entity", entities), ("portal", portals)):
         if items:
             data[key] = items
     return data
@@ -186,7 +244,7 @@ def village_rules(draw: st.DrawFn) -> Rules:
             anchors.append(f"{name}.center")
         targets.append(name)
     seed = draw(st.integers(0, 2**32))
-    return Rules(
+    return one_level_rules(
         seed, "Village", (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
     )
 
@@ -246,12 +304,135 @@ def to_toml_text(r: Rules) -> str:
         return str(v)
 
     data = to_toml_data(r)
-    lines = [f"seed = {data['seed']}", "[level]"]
-    lines += [f"{k} = {value(v)}" for k, v in data["level"].items()]
+    lines = [f"seed = {data['seed']}"]
+    levels: object = data["level"]
+    many = isinstance(levels, list)
+    tables = cast(list[dict[str, object]], levels) if many else [cast(dict[str, object], levels)]
+    for level in tables:
+        lines.append("[[level]]" if many else "[level]")
+        lines += [f"{k} = {value(v)}" for k, v in level.items()]
     lines.append("[kinds]")
     lines += [f"{k} = {value(v)}" for k, v in data["kinds"].items()]
-    for key in ("area", "path", "entity"):
+    if "entity_types" in data:
+        lines.append("[entity_types]")
+        lines += [f"{k} = {value(v)}" for k, v in data["entity_types"].items()]
+    for key in ("area", "path", "entity", "portal"):
         for item in data.get(key, []):
             lines.append(f"[[{key}]]")
             lines += [f"{k} = {value(v)}" for k, v in item.items()]
     return "\n".join(lines) + "\n"
+
+
+@st.composite
+def multi_rules(draw: st.DrawFn) -> Rules:
+    """合法的多 level 規則（D-009、D-010）：1～3 個 level、元素分在各個 level、
+    entity 類型與跨 level 的傳送點。元素只指向同一個 level 裡、排在前面的元素，一定不成環。
+    """
+    level_name = names.filter(lambda n: n.lower() not in RESERVED_NAMES)
+    level_names = draw(st.lists(level_name, min_size=1, max_size=3, unique_by=lambda n: n.lower()))
+    levels: list[LevelRule] = []
+    used_slots: list[tuple[int, int]] = []
+    for i, name in enumerate(level_names):
+        size = (draw(st.integers(1, 20)), draw(st.integers(1, 20)))
+        how = draw(st.sampled_from(["none", "at"] if i == 0 else ["at", "near"]))
+        if how == "none":
+            levels.append(LevelRule(name, size))
+        elif how == "at":
+            # 固定位置的 level 不能重疊：每個 level 佔一個 25 格見方的格位，包含負的座標
+            slot = draw(st.sampled_from([s for s in SLOTS if s not in used_slots]))
+            used_slots.append(slot)
+            levels.append(LevelRule(name, size, at=slot))
+        else:
+            near = draw(st.sampled_from(level_names[:i]))
+            side = draw(st.none() | st.sampled_from(SIDES))
+            levels.append(LevelRule(name, size, near=near, side=side, gap=draw(st.integers(0, 5))))
+    kinds = (Kind("ground", 1, "#C8B27A"), Kind("house", 2, "#8A4B2F"))
+    kind = st.sampled_from(["ground", "house"])
+    element_names = draw(st.lists(names, max_size=12, unique=True))
+    areas: list[AreaRule] = []
+    paths: list[PathRule] = []
+    entities: list[EntityRule] = []
+    targets: dict[str, list[str]] = {lv.name: [] for lv in levels}
+    anchors: dict[str, list[str]] = {lv.name: [] for lv in levels}
+    many = len(levels) > 1
+    portal_names: list[str] = []
+    for name in element_names:
+        lv = draw(st.sampled_from(levels))
+        width, height = lv.size
+        written = lv.name if many else draw(st.sampled_from([None, lv.name]))
+        here = targets[lv.name]
+        choice = draw(
+            st.sampled_from(
+                ["area", "path", "entity", "portal"] if here else ["area", "entity", "portal"]
+            )
+        )
+        if choice == "area":
+            w, h = draw(st.integers(1, width)), draw(st.integers(1, height))
+            if here and draw(st.booleans()):
+                area = AreaRule(
+                    name, draw(kind), (w, h), near=draw(st.sampled_from(here)), level=written
+                )
+            else:
+                at = (draw(st.integers(0, width - w)), draw(st.integers(0, height - h)))
+                area = AreaRule(name, draw(kind), (w, h), at=at, level=written)
+            areas.append(area)
+            here.append(name)
+            anchors[lv.name] += [f"{name}.{a}" for a in AREA_ANCHORS]
+        elif choice == "path":
+            start = draw(st.sampled_from(here))
+            to = f"edge:{draw(st.sampled_from(SIDES))}"
+            paths.append(PathRule(name, draw(kind), start, to, 1, level=written))
+            here.append(name)
+            anchors[lv.name] += [f"{name}.{a}" for a in PATH_ANCHORS]
+        elif choice == "entity":
+            cell = st.tuples(st.integers(0, width - 1), st.integers(0, height - 1))
+            at = draw(st.sampled_from(anchors[lv.name]) | cell if anchors[lv.name] else cell)
+            entities.append(EntityRule(name, "Spawn", at, level=written))
+        else:
+            portal_names.append(name)
+    # entity 類型：一種給傳送點用（剛好一個 EntityRef），另外可能有一種不帶引用的
+    field_type = st.sampled_from(["Int", "Float", "Bool", "String"])
+    types: list[EntityType] = []
+    if draw(st.booleans()) or portal_names:
+        extra = tuple((f"f{i}", draw(field_type)) for i in range(draw(st.integers(0, 2))))
+        types.append(EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"), *extra)))
+    if draw(st.booleans()):
+        fields = tuple((f"g{i}", draw(field_type)) for i in range(draw(st.integers(0, 3))))
+        size = (draw(st.integers(1, 32)), draw(st.integers(1, 32)))
+        types.append(EntityType("Sign", "#FFFFFF", size, fields))
+    every_anchor = [a for lv in levels for a in anchors[lv.name]]
+    sizes = {area.name: area.size for area in areas}
+
+    def anchor_cell(anchor: str) -> tuple[str, int, int] | None:
+        """區域錨點在區域裡的哪一格，獨立於 core 另算；路徑的錨點回傳 None（排了才知道）。"""
+        owner, _, which = anchor.partition(".")
+        if owner not in sizes:
+            return None
+        w, h = sizes[owner]
+        x = {"west": 0, "east": w - 1}.get(which, w // 2)
+        y = {"north": 0, "south": h - 1}.get(which, h // 2)
+        return owner, x, y
+
+    # 傳送點兩端不能落在同一格（同一個 1 格高的區域，north 與 south 是同一格）
+    pairs = [
+        (a, b)
+        for a in every_anchor
+        for b in every_anchor
+        if a != b and (anchor_cell(a) is None or anchor_cell(a) != anchor_cell(b))
+    ]
+    portals: list[PortalRule] = []
+    if pairs:
+        for name in portal_names:
+            start, to = draw(st.sampled_from(pairs))
+            portals.append(PortalRule(name, "Portal", start, to))
+    seed = draw(st.integers(-(2**63), 2**63 - 1))
+    return Rules(
+        seed,
+        tuple(levels),
+        kinds,
+        tuple(areas),
+        tuple(paths),
+        tuple(entities),
+        tuple(types),
+        tuple(portals),
+    )

@@ -13,7 +13,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .errors import SceneError
-from .rules import EDGE, AreaRule, Cell, PathRule, Rules, Side, references
+from .rules import (
+    AREA_ANCHORS,
+    EDGE,
+    AreaRule,
+    Cell,
+    PathRule,
+    Rules,
+    Side,
+    area_anchor_offset,
+    references,
+)
 
 Rect = tuple[int, int, int, int]  # x, y, 寬, 高（格）
 Placeable = AreaRule | PathRule
@@ -57,6 +67,11 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
 
 def layout(rules: Rules) -> Layout:
     """照規則排出每個元素；排不下丟 SceneError。"""
+    # 多個 level 的配置還沒做（#36）；先講清楚，不默默把元素排在同一個 level
+    if len(rules.levels) > 1:
+        raise SceneError(
+            f"level：有 {len(rules.levels)} 個 level；多個 level 的生成還不支援（#36）"
+        )
     grid = _Grid(*rules.level_size)
     anchors: dict[str, Cell] = {}
     pushed_by: dict[str, frozenset[str]] = {}
@@ -65,7 +80,7 @@ def layout(rules: Rules) -> Layout:
         if isinstance(element, AreaRule):
             rect, pushed = _place_area(element, grid, rng)
             cells = _rect_cells(rect)
-            anchors[f"{element.name}.center"] = _center(rect)
+            anchors |= _area_anchors(element.name, rect)
             grid.areas.add(element.name)
         else:
             cells, start, end, pushed = _place_path(element, grid, rng)
@@ -122,6 +137,16 @@ class _Grid:
 def _rect_cells(rect: Rect) -> frozenset[Cell]:
     x, y, w, h = rect
     return frozenset((cx, cy) for cy in range(y, y + h) for cx in range(x, x + w))
+
+
+def _area_anchors(name: str, rect: Rect) -> dict[str, Cell]:
+    """區域的錨點：正中央，加上四邊在區域自己的格裡、那一邊的正中央（D-010）。"""
+    x, y, w, h = rect
+    found: dict[str, Cell] = {}
+    for anchor in AREA_ANCHORS:
+        dx, dy = area_anchor_offset((w, h), anchor)
+        found[f"{name}.{anchor}"] = (x + dx, y + dy)
+    return found
 
 
 def _center(rect: Rect) -> Cell:

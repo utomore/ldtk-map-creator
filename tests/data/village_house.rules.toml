@@ -1,0 +1,48 @@
+# 範例規則檔：村莊加一間房子的內部，兩邊用傳送點連起來（D-009、D-010）。
+seed = 7
+
+[[level]]
+name = "Village"
+size = [40, 30]
+
+[[level]]
+name = "House1"
+size = [12, 10]
+near = "Village"
+side = "east"
+gap = 2
+
+[kinds]
+plaza = { value = 1, color = "#C8B27A" }
+house = { value = 2, color = "#8A4B2F" }
+floor = { value = 3, color = "#B0A090" }
+
+[entity_types]
+Portal = { color = "#4FC3F7", size = [16, 16], fields = { target = "EntityRef" } }
+
+[[area]]
+name = "plaza"
+level = "Village"
+kind = "plaza"
+size = [8, 8]
+at = "center"
+
+[[area]]
+name = "house_1"
+level = "Village"
+kind = "house"
+size = [5, 4]
+near = "plaza"
+side = "north"
+
+[[area]]
+name = "room"
+level = "House1"
+kind = "floor"
+size = [10, 8]
+at = "center"
+
+[[portal]]
+name = "house_1_door"
+from = "house_1.south"
+to = "room.south"
