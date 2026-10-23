@@ -31,9 +31,17 @@ names = st.from_regex(r"[A-Za-z_][A-Za-z0-9_]{0,8}", fullmatch=True)
 
 
 @st.composite
-def rules(draw: st.DrawFn) -> Rules:
+def rules(
+    draw: st.DrawFn,
+    *,
+    entity_types: st.SearchStrategy[str] = names,
+    max_side: int = 40,
+    min_elements: int = 0,
+    max_elements: int = 10,
+    max_area: int | None = None,
+) -> Rules:
     """合法的規則：每個元素只指向排在它前面的區域或路徑，所以一定不成環。"""
-    width, height = draw(st.integers(1, 40)), draw(st.integers(1, 40))
+    width, height = draw(st.integers(1, max_side)), draw(st.integers(1, max_side))
     kind_names = draw(st.lists(names, min_size=1, max_size=4, unique=True))
     values = draw(
         st.lists(
@@ -42,7 +50,7 @@ def rules(draw: st.DrawFn) -> Rules:
     )
     colors = st.integers(0, 0xFFFFFF).map(lambda c: f"#{c:06X}")
     kinds = tuple(Kind(n, v, draw(colors)) for n, v in zip(kind_names, values, strict=True))
-    element_names = draw(st.lists(names, max_size=10, unique=True))
+    element_names = draw(st.lists(names, min_size=min_elements, max_size=max_elements, unique=True))
 
     areas: list[AreaRule] = []
     paths: list[PathRule] = []
@@ -55,7 +63,8 @@ def rules(draw: st.DrawFn) -> Rules:
             st.sampled_from(["area", "path", "entity"] if targets else ["area", "entity"])
         )
         if choice == "area":
-            w, h = draw(st.integers(1, width)), draw(st.integers(1, height))
+            cap = max_area or max(width, height)
+            w, h = draw(st.integers(1, min(width, cap))), draw(st.integers(1, min(height, cap)))
             if targets and draw(st.booleans()):
                 area = AreaRule(
                     name,
@@ -85,7 +94,7 @@ def rules(draw: st.DrawFn) -> Rules:
         else:
             cell = st.tuples(st.integers(0, width - 1), st.integers(0, height - 1))
             at = draw(st.sampled_from(anchors) | cell if anchors else cell)
-            entities.append(EntityRule(name, draw(names), at))
+            entities.append(EntityRule(name, draw(entity_types), at))
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     level = draw(names)
     return Rules(seed, level, (width, height), kinds, tuple(areas), tuple(paths), tuple(entities))
@@ -124,3 +133,53 @@ def to_toml_data(r: Rules) -> dict[str, Any]:
         if items:
             data[key] = items
     return data
+
+
+@st.composite
+def village_rules(draw: st.DrawFn) -> Rules:
+    """像村莊的規則：一兩個固定的區域，其餘大多靠近別人，加上路徑與 entity。
+
+    通用的 `rules()` 多半排不下或很稀疏；配置的 law 要常常碰撞、常常擠開才測得到。
+    """
+    width, height = draw(st.integers(12, 32)), draw(st.integers(12, 32))
+    kinds = (Kind("ground", 1, "#C8B27A"), Kind("house", 2, "#8A4B2F"), Kind("road", 3, "#8E8E8E"))
+    size = st.tuples(st.integers(1, 5), st.integers(1, 5))
+    count = draw(st.integers(4, 12))
+    element_names = [f"e{i}" for i in range(count)]
+    areas: list[AreaRule] = [AreaRule("e0", "ground", draw(size), at="center")]
+    paths: list[PathRule] = []
+    entities: list[EntityRule] = []
+    targets = ["e0"]
+    anchors = ["e0.center"]
+    for name in element_names[1:]:
+        choice = draw(st.sampled_from(["near", "near", "near", "fixed", "path", "entity"]))
+        if choice == "fixed":
+            w, h = draw(size)
+            w, h = min(w, width), min(h, height)
+            at = (draw(st.integers(0, width - w)), draw(st.integers(0, height - h)))
+            areas.append(AreaRule(name, "house", (w, h), at=at))
+        elif choice == "near":
+            side = draw(st.none() | st.sampled_from(SIDES))
+            target = draw(st.sampled_from(targets))
+            areas.append(
+                AreaRule(
+                    name, "house", draw(size), near=target, side=side, gap=draw(st.integers(0, 3))
+                )
+            )
+        elif choice == "path":
+            start = draw(st.sampled_from(targets))
+            others = [t for t in targets if t != start]
+            edges = st.sampled_from([f"edge:{s}" for s in SIDES])
+            to = draw(edges | st.sampled_from(others) if others else edges)
+            paths.append(PathRule(name, "road", start, to, draw(st.integers(1, 2))))
+            anchors += [f"{name}.start", f"{name}.end"]
+        else:
+            entities.append(EntityRule(name, "Spawn", draw(st.sampled_from(anchors))))
+            continue
+        if choice != "path":
+            anchors.append(f"{name}.center")
+        targets.append(name)
+    seed = draw(st.integers(0, 2**32))
+    return Rules(
+        seed, "Village", (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
+    )
