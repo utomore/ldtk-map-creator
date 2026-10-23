@@ -1,7 +1,8 @@
 """產生合法規則檔的 hypothesis 策略，以及把規則資料轉回 TOML 讀出的樣子。"""
 
+import json
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from hypothesis import strategies as st
 
@@ -221,6 +222,34 @@ def placeable_village_rules(draw: st.DrawFn) -> Rules:
             layout(r)
         except SceneError as error:
             name = str(error).split("：", 1)[0].split(".", 1)[0]
-            r = _without(r, name)
+            smaller = _without(r, name)
+            if smaller == r:  # 訊息沒點名元素：不是排不下，是策略或配置器的錯
+                raise
+            r = smaller
             continue
         return r
+
+
+def to_toml_text(r: Rules) -> str:
+    """規則資料寫成規則檔的文字；只處理 to_toml_data 會產生的形狀。"""
+
+    def value(v: object) -> str:
+        if isinstance(v, str):
+            return json.dumps(v, ensure_ascii=False)  # 簡單字串的 JSON 寫法也是合法的 TOML
+        if isinstance(v, list):
+            return "[" + ", ".join(value(x) for x in cast(list[object], v)) + "]"
+        if isinstance(v, dict):
+            items = cast(dict[str, object], v).items()
+            return "{ " + ", ".join(f"{k} = {value(x)}" for k, x in items) + " }"
+        return str(v)
+
+    data = to_toml_data(r)
+    lines = [f"seed = {data['seed']}", "[level]"]
+    lines += [f"{k} = {value(v)}" for k, v in data["level"].items()]
+    lines.append("[kinds]")
+    lines += [f"{k} = {value(v)}" for k, v in data["kinds"].items()]
+    for key in ("area", "path", "entity"):
+        for item in data.get(key, []):
+            lines.append(f"[[{key}]]")
+            lines += [f"{k} = {value(v)}" for k, v in item.items()]
+    return "\n".join(lines) + "\n"

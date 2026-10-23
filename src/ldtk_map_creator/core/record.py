@@ -1,8 +1,10 @@
 """生成紀錄：記下上次生成的結果，重新生成前拿來比對（D-008）。
 
-存在場景地圖旁的 `<名>.generated.json`（D-002）。只記生成負責寫的內容：
-level 的大小、IntGrid 的值定義與每一格、entity 的 iid、定義與位置。
-LDtk 存檔時會改的其他欄位不記，在 LDtk 打開再存一次不算改過。
+存在場景地圖旁的 `<名>.generated.json`（D-002）。記的是使用者會改的內容：
+圖層、entity、tileset 的定義；每個 level 的大小、世界座標與欄位；
+每個圖層的 IntGrid 值定義、每一格與手擺的圖塊；每個 entity 的 iid、定義、位置與欄位。
+LDtk 自己會重算或改寫的欄位（`__` 衍生欄位、auto-layer 圖塊、版本號、編輯器設定）不記，
+在 LDtk 打開再存一次不算改過。
 """
 
 import hashlib
@@ -16,6 +18,7 @@ from .layout import Layout
 from .scene import SceneMap
 
 VERSION = 1
+_DEF_NAMES = {"layers": "圖層", "entities": "entity ", "tilesets": "tileset "}
 _EXAMPLES = 3  # 每一層最多列幾格不同的例子
 
 Content = dict[str, Any]
@@ -32,30 +35,59 @@ def record_path(scene_path: Path) -> Path:
 
 
 def content(target: SceneMap) -> Content:
-    """場景地圖裡生成負責的內容；兩份相同就表示沒被直接改過。"""
+    """場景地圖裡使用者會改的內容；兩份相同就表示沒被直接改過。"""
     project = target.project
     refresh_derived(project)  # entity 的格位置從 px 重算，不靠檔案裡可能過期的 __grid
     grid = project["defaultGridSize"]
+    raw = cast(dict[str, Any], project["defs"])
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d["identifier"] for d in project["defs"]["entities"]}
+    defs = {
+        "layers": [
+            [d["identifier"], d["type"], d["gridSize"], len(d["autoRuleGroups"])]
+            for d in project["defs"]["layers"]
+        ],
+        "entities": [
+            [d["identifier"], d["width"], d["height"], len(d["fieldDefs"])]
+            for d in project["defs"]["entities"]
+        ],
+        "tilesets": [[d.get("identifier"), d.get("relPath")] for d in raw.get("tilesets", [])],
+    }
     levels: Content = {}
     for level in project["levels"]:
         layers: Content = {}
         entities: list[list[object]] = []
         for layer in level["layerInstances"] or []:
             ldef = layer_defs[layer["layerDefUid"]]
+            entry: Content = {"type": ldef["type"]}
             if ldef["type"] == "IntGrid":
-                values = [[v["value"], v["identifier"], v["color"]] for v in ldef["intGridValues"]]
-                layers[ldef["identifier"]] = {"values": values, "cells": list(layer["intGridCsv"])}
+                # LDtk 存檔可能改顏色的大小寫，統一成大寫再比
+                entry["values"] = [
+                    [v["value"], v["identifier"], v["color"].upper()] for v in ldef["intGridValues"]
+                ]
+                entry["cells"] = list(layer["intGridCsv"])
+            tiles = cast(dict[str, Any], layer).get("gridTiles", [])
+            entry["tiles"] = sorted(
+                [t.get("px"), t.get("src"), t.get("f"), t.get("t")] for t in tiles
+            )
+            layers[ldef["identifier"]] = entry
             for entity in layer["entityInstances"]:
                 gx, gy = entity["__grid"]
-                entities.append([entity["iid"], entity_defs.get(entity["defUid"]), gx, gy])
+                kind = entity_defs.get(entity["defUid"])
+                entities.append([entity["iid"], kind, gx, gy, _fields(entity)])
         levels[level["identifier"]] = {
             "size": [cell_count(level["pxWid"], grid), cell_count(level["pxHei"], grid)],
+            "world": [level["worldX"], level["worldY"]],
+            "fields": _fields(level),
             "layers": layers,
             "entities": sorted(entities, key=lambda e: str(e[0])),
         }
-    return levels
+    return {"defs": defs, "levels": levels}
+
+
+def _fields(owner: object) -> list[list[object]]:
+    found = cast(dict[str, Any], owner).get("fieldInstances", [])
+    return [[f.get("defUid"), f.get("__value")] for f in found]
 
 
 def make_record(target: SceneMap, placed: Layout) -> dict[str, Any]:
@@ -81,14 +113,34 @@ def read_record(scene_path: Path) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SceneError(f"讀不了生成紀錄 {path}：{error}") from error
-    if not isinstance(data, dict) or cast(dict[str, Any], data).get("version") != VERSION:
-        raise SceneError(f"生成紀錄 {path} 的格式不認得")
-    return cast(dict[str, Any], data)
+    record = cast(dict[str, Any], data) if isinstance(data, dict) else {}
+    body = record.get("content")
+    if (
+        record.get("version") != VERSION
+        or not isinstance(record.get("elements"), dict)
+        or not isinstance(body, dict)
+        or set(cast(dict[str, Any], body)) != {"defs", "levels"}
+    ):
+        raise SceneError(f"生成紀錄 {path} 的格式不認得；帶 force 照規則重新生成就會重寫")
+    return record
 
 
 def differences(old: Content, new: Content) -> list[str]:
-    """兩份內容差在哪裡，給人看的一行一條；相同時是空的。"""
+    """兩份內容差在哪裡，給人看的一行一條；相同時是空的。紀錄壞掉時丟 SceneError。"""
+    try:
+        return _differences(old, new)
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError) as error:
+        raise SceneError(
+            f"生成紀錄的內容不認得（{error!r}）；帶 force 照規則重新生成就會重寫"
+        ) from error
+
+
+def _differences(old_content: Content, new_content: Content) -> list[str]:
     lines: list[str] = []
+    for part in ("layers", "entities", "tilesets"):
+        if old_content["defs"][part] != new_content["defs"][part]:
+            lines.append(f"{_DEF_NAMES[part]}定義改了")
+    old, new = old_content["levels"], new_content["levels"]
     for name in sorted(old.keys() - new.keys()):
         lines.append(f"level {name} 不見了")
     for name in sorted(new.keys() - old.keys()):
@@ -102,16 +154,23 @@ def _level_differences(old: Content, new: Content) -> list[str]:
     lines: list[str] = []
     if old["size"] != new["size"]:
         lines.append(f"大小 {_size(old['size'])} 變成 {_size(new['size'])}")
+    if old["world"] != new["world"]:
+        lines.append(f"世界座標 {tuple(old['world'])} 變成 {tuple(new['world'])}")
+    if old["fields"] != new["fields"]:
+        lines.append("level 的欄位改了")
     width = new["size"][0]
+    same_size = old["size"] == new["size"]
     for layer in sorted(old["layers"].keys() | new["layers"].keys()):
         before, after = old["layers"].get(layer), new["layers"].get(layer)
         if before is None or after is None:
             lines.append(f"圖層 {layer} {'不見了' if after is None else '是新的'}")
             continue
-        if before["values"] != after["values"]:
+        if before.get("values") != after.get("values"):
             lines.append(f"圖層 {layer} 的值定義改了")
-        if len(before["cells"]) != len(after["cells"]):
-            continue  # 大小變了，上面已經說過
+        if before["tiles"] != after["tiles"]:
+            lines.append(f"圖層 {layer} 的圖塊改了")
+        if not same_size or "cells" not in before or "cells" not in after:
+            continue  # 大小變了，上面已經說過；格子的座標對不上，不逐格比
         diff = [
             (i, a, b) for i, (a, b) in enumerate(zip(before["cells"], after["cells"], strict=True))
         ]
@@ -125,15 +184,17 @@ def _level_differences(old: Content, new: Content) -> list[str]:
     before_entities = {e[0]: e for e in old["entities"]}
     after_entities = {e[0]: e for e in new["entities"]}
     for iid in sorted(before_entities.keys() - after_entities.keys()):
-        _, kind, x, y = before_entities[iid]
+        _, kind, x, y, _ = before_entities[iid]
         lines.append(f"{kind}（{iid}）在 ({x},{y}) 被刪掉了")
     for iid in sorted(after_entities.keys() - before_entities.keys()):
-        _, kind, x, y = after_entities[iid]
+        _, kind, x, y, _ = after_entities[iid]
         lines.append(f"多了 {kind}（{iid}）在 ({x},{y})")
     for iid in sorted(before_entities.keys() & after_entities.keys()):
         a, b = before_entities[iid], after_entities[iid]
-        if a != b:
+        if a[:4] != b[:4]:
             lines.append(f"{a[1]}（{iid}）從 ({a[2]},{a[3]}) 變成 {b[1]} 在 ({b[2]},{b[3]})")
+        elif a != b:
+            lines.append(f"{a[1]}（{iid}）的欄位改了")
     return lines
 
 

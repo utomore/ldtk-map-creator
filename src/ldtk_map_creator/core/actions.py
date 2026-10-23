@@ -116,13 +116,18 @@ def _commit(
     names = {lv["identifier"] for lv in levels}
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
-    touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys()
+    # level 不在了（改名或被拿掉），它的預覽圖也一起刪
+    previews_folder = rendering.preview_path(target, primary).parent
+    old_previews = {p for p in previews_folder.glob("*.png") if p.stem not in names}
+    touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | old_previews
     saved = _snapshot(touched)
     try:
         scene.save_scene(target, levels=set(changed), refreshed=True)
         previews = tuple(rendering.write_preview(target, lv, image) for lv, image in images.items())
         for path, data in extra.items():
             atomic_write(path, data)
+        for old in old_previews:
+            old.unlink(missing_ok=True)
     except BaseException:
         _restore(saved)
         raise
@@ -303,11 +308,14 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     `force=True` 才蓋掉。存法沿用既有的場景地圖，新建時拆開存。
     """
     rules = load_rules(record.rules_path(path))
-    previous = record.read_record(path)
+    previous = _read_record(path, force)
     split = True
-    if path.exists():
-        current = scene.load_scene(path)
+    before: dict[str, object] | None = None
+    current = _load_current(path, force) if path.exists() else None
+    if current is not None:
         split = current.split
+        # iid 由 seed 推出，沒變的 level 跟磁碟上的一樣，就不重寫
+        before = {lv["iid"]: copy.deepcopy(lv) for lv in current.project["levels"]}
         if not force:
             if previous is None:
                 raise SceneError(
@@ -321,11 +329,33 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                     f"{path} 在上次生成之後被直接改過，不覆蓋：\n{listed}\n"
                     "要保留這些改動，就把它們寫進規則檔；確定要蓋掉就帶 force"
                 )
-    target, placed = generation.generate_scene(rules, path, split=split, overwrite=True)
+    # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；帶 force 或重新生成才蓋掉
+    overwrite = force or path.exists()
+    target, placed = generation.generate_scene(rules, path, split=split, overwrite=overwrite)
     new_record = record.make_record(target, placed)
     summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
-    return _commit(target, None, summary, rules.level_name, extra=extra)
+    return _commit(target, before, summary, rules.level_name, extra=extra)
+
+
+def _read_record(path: Path, force: bool) -> dict[str, Any] | None:
+    """讀生成紀錄；帶 force 時讀不了也沒關係，反正要照規則重寫。"""
+    try:
+        return record.read_record(path)
+    except SceneError:
+        if force:
+            return None
+        raise
+
+
+def _load_current(path: Path, force: bool) -> SceneMap | None:
+    """讀既有的場景地圖；帶 force 時讀不了就當作沒有，照規則重寫。"""
+    try:
+        return scene.load_scene(path)
+    except SceneError:
+        if force:
+            return None
+        raise
 
 
 def _generate_summary(
