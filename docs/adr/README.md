@@ -39,6 +39,7 @@ decision-makers: [帳號]
 | [D-004](design/D-004-tools.md) | 工具：專案管理、檢查、CI 與 CD 用什麼 |
 | [D-005](design/D-005-mcp-sdk.md) | MCP 用官方 `mcp` SDK 2.x 的 MCPServer |
 | [D-006](design/D-006-ldtk-model.md) | LDtk 檔用「空專案範本加精簡自寫型別」表示 |
+| [D-007](design/D-007-rules-file.md) | 規則檔用宣告式：地圖上每一塊東西寫成一個有名字的元素 |
 
 ## 流程
 
