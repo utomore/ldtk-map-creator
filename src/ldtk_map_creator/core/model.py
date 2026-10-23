@@ -31,6 +31,39 @@ class LayerDef(TypedDict):
     autoSourceLayerDefUid: int | None
 
 
+# 欄位定義與實例：只寫用到的欄位；其餘照範本原樣保留（D-006）
+FieldDef = TypedDict(
+    "FieldDef",
+    {
+        "identifier": str,
+        "uid": int,
+        "type": str,
+        "__type": str,
+        "isArray": bool,
+        "canBeNull": bool,
+        "defaultOverride": object,
+        "min": float | None,
+        "max": float | None,
+        "allowedRefs": str,
+        "allowedRefsEntityUid": int | None,
+        "allowedRefTags": list[str],
+        "allowOutOfLevelRef": bool,
+    },
+)
+
+FieldInstance = TypedDict(
+    "FieldInstance",
+    {
+        "__identifier": str,
+        "__type": str,
+        "__value": object,
+        "__tile": object,
+        "defUid": int,
+        "realEditorValues": list[object],
+    },
+)
+
+
 class EntityDef(TypedDict):
     identifier: str
     uid: int
@@ -40,7 +73,7 @@ class EntityDef(TypedDict):
     pivotX: float
     pivotY: float
     tags: list[str]
-    fieldDefs: list[object]
+    fieldDefs: list[FieldDef]
     tileRect: object
     maxCount: int
     limitScope: str
@@ -76,7 +109,7 @@ EntityInstance = TypedDict(
         "height": int,
         "defUid": int,
         "px": list[int],
-        "fieldInstances": list[object],
+        "fieldInstances": list[FieldInstance],
     },
 )
 

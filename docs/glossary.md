@@ -23,6 +23,7 @@
 | 擠開 | 配置時一個元素的候選位置被別的元素佔了，只好換位置；記下被誰擠開，用來說明改一個元素會牽動誰 | `pushed_by` |
 | entity 類型 | 規則檔 `[entity_types]` 裡宣告的一種 entity：顏色、大小與欄位，生成時變成 LDtk 的 entity 定義；不是元素 | - |
 | 傳送點 | 規則檔 `[[portal]]` 元素：兩個錨點各擺一個 entity，用 EntityRef 欄位互指，可以跨 level；不是 Spawn | - |
+| 欄位 | entity 上一個有名字、有型別的值（LDtk 的 field），例如傳送點的 `target`；不是規則檔裡元素的欄位 | `FieldDef`、`FieldInstance`、`core/fields.py` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
 | 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接；不是某款遊戲專用的層名 | - |
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level` |
