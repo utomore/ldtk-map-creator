@@ -12,7 +12,7 @@ from PIL import Image
 
 from ldtk_map_creator.core.edit import paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
-from ldtk_map_creator.core.render import MARGIN, image_size, render_level, save_preview
+from ldtk_map_creator.core.render import MARGIN, image_size, render_level, write_preview
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 
 FAST = settings(max_examples=30, deadline=None)
@@ -73,8 +73,9 @@ def test_render_1_to_3_size_and_colors(
         background = _hex(level["__bgColor"])
         cell = 16 * scale
         placed = {(x, y) for x, y in spawns if x < w and y < h}
-        # entity 名稱寫在方塊上方（第 0 列寫在下方），可能比一格寬：那一列整列都不驗
-        label_rows = {y - 1 if y > 0 else y + 1 for _, y in placed}
+        # entity 名稱寫在方塊上方、貼著上緣時寫在下方、都放不下時寫在方塊裡，
+        # 而且可能比一格寬：上、下、同一列整列都不驗（entity 自己的格照驗）
+        label_rows = {row for _, y in placed for row in (y - 1, y, y + 1)}
         covered = placed | {(x, y) for y in label_rows for x in range(w)}
         filled = {(x, y) for x, y in painted if x < w and y < h}
         for cy in range(h):
@@ -104,10 +105,10 @@ def test_render_4_is_deterministic(
         assert _png(render_level(load_scene(scene.path), "Room", scale=scale)) == first
 
 
-def test_example_save_preview_location(tmp_path: Path) -> None:
+def test_example_write_preview_location(tmp_path: Path) -> None:
     """典型：預覽圖存在場景地圖旁的 previews/<主檔名>/<level>.png。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    path = save_preview(scene, "Level_0")
+    path = write_preview(scene, "Level_0", render_level(scene, "Level_0"))
     assert path == tmp_path / "previews" / "village" / "Level_0.png"
     assert Image.open(path).size == image_size(scene.level("Level_0"), 2)
 
@@ -173,7 +174,7 @@ def test_example_locked_preview_reports_scene_error(
 
     monkeypatch.setattr(Path, "replace", locked)
     with pytest.raises(SceneError):
-        save_preview(scene, "Level_0")
+        write_preview(scene, "Level_0", render_level(scene, "Level_0"))
     assert list((tmp_path / "previews" / "village").glob("*.tmp")) == []
 
 
