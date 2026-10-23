@@ -37,7 +37,7 @@ decision-makers: [帳號]
 | [D-002](design/D-002-storage.md) | 資料放哪裡 |
 | [D-003](design/D-003-architecture.md) | 軟體架構：採用哪一種架構 |
 | [D-004](design/D-004-tools.md) | 工具：專案管理、檢查、CI 與 CD 用什麼 |
-| [D-005](design/D-005-mcp-sdk.md) | MCP 用官方 `mcp` SDK 內建的 FastMCP |
+| [D-005](design/D-005-mcp-sdk.md) | MCP 用官方 `mcp` SDK 2.x 的 MCPServer |
 | [D-006](design/D-006-ldtk-model.md) | LDtk 檔用「空專案範本加精簡自寫型別」表示 |
 
 ## 流程

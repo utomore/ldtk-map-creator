@@ -15,7 +15,7 @@ decision-makers: [utomore]
 ```
 src/<套件名>/
   core/   場景地圖模型、IntGrid / Entity 操作、規則生成、render、讀寫檔
-  mcp/    FastMCP 工具，只轉呼叫 core
+  mcp/    MCPServer 工具，只轉呼叫 core
   cli/    CLI 指令，只轉呼叫 core
 依賴方向：mcp → core ← cli
 ```
