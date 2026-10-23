@@ -48,7 +48,9 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
         on_disk = load_scene(path)
         assert saved["content"] == record.content(on_disk)
         with Image.open(preview_path(on_disk, r.level_name)) as image:
-            assert image.tobytes() == render_level(on_disk, r.level_name).tobytes()
+            names = record.labels(saved, r.level_name)
+            expected = render_level(on_disk, r.level_name, labels=names)
+            assert image.tobytes() == expected.tobytes()
         before = _files(folder)
         result = actions.generate_scene(path)
         assert _files(folder) == before
@@ -338,3 +340,12 @@ def test_example_force_keeps_leftover_level_files(tmp_path: Path) -> None:
     with pytest.raises(SceneError, match="不覆蓋"):
         actions.generate_scene(path, force=True)
     assert (tmp_path / "village" / "Cave.ldtkl").is_file()
+
+
+def test_example_render_level_keeps_names(tmp_path: Path) -> None:
+    """render_level 操作重畫從規則生成的 level，也寫上元素名稱，跟生成時的預覽圖一樣。"""
+    path = _generated(tmp_path)
+    preview = tmp_path / "previews" / "village" / "Village.png"
+    generated = preview.read_bytes()
+    actions.render_level(path, "Village")
+    assert preview.read_bytes() == generated

@@ -121,7 +121,44 @@ def make_record(target: SceneMap, placed: Layout) -> dict[str, Any]:
         elements[name] = _digest(sorted(cells))
     for name, cell in placed.entities.items():
         elements[name] = _digest([cell])
-    return {"version": VERSION, "content": content(target), "elements": elements}
+    level = target.project["levels"][0]["identifier"]
+    names = [[name, x, y] for name, x, y in name_positions(placed)]
+    return {
+        "version": VERSION,
+        "content": content(target),
+        "elements": elements,
+        "labels": {"level": level, "names": names},
+    }
+
+
+def name_positions(placed: Layout) -> list[tuple[str, float, float]]:
+    """預覽圖上每個區域、路徑的名稱寫在哪裡（格座標）。
+
+    區域寫在正中央；路徑寫在自己的格裡、離外框中心最近的一格，L 形路才不會寫到空地上。
+    """
+    found: list[tuple[str, float, float]] = []
+    for name, cells in placed.cells.items():
+        xs = [x for x, _ in cells]
+        ys = [y for _, y in cells]
+        cx, cy = (min(xs) + max(xs) + 1) / 2, (min(ys) + max(ys) + 1) / 2
+        if f"{name}.center" not in placed.anchors:
+            x, y = min(
+                cells, key=lambda c: (abs(c[0] + 0.5 - cx) + abs(c[1] + 0.5 - cy), c[1], c[0])
+            )
+            cx, cy = x + 0.5, y + 0.5
+        found.append((name, cx, cy))
+    return found
+
+
+def labels(saved: dict[str, Any] | None, level: str) -> list[tuple[str, float, float]]:
+    """從生成紀錄取出某個 level 要寫的元素名稱；沒有紀錄或不是生成的 level 就是空的。"""
+    found = saved.get("labels") if saved else None
+    if not isinstance(found, dict) or cast(dict[str, Any], found).get("level") != level:
+        return []
+    try:
+        return [(str(n), float(x), float(y)) for n, x, y in cast(dict[str, Any], found)["names"]]
+    except (KeyError, TypeError, ValueError):
+        return []
 
 
 def dump(data: dict[str, Any]) -> bytes:

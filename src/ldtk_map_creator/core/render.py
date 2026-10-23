@@ -6,12 +6,15 @@
 - entity 畫成定義顏色的方塊（用 entity 自己的尺寸），名稱寫在方塊上方；貼著上緣時寫在下方。
 - 格線，加上方與左邊的格子座標，方便在對話裡指定位置。
 - 都加上圖層的像素偏移，跟 LDtk 顯示的位置一致。
+- 給了元素名稱時（從規則生成的 level），最後把名稱寫在元素的位置上，加深色描邊，
+  不被格線或顏色蓋掉；名稱整個留在 level 範圍內。
 
 render 只讀不改：不呼叫 refresh_derived，所有值從定義與本體欄位算。
 """
 
 import io
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -70,8 +73,17 @@ def _label_grid(
     return project["defaultGridSize"], MARGIN, MARGIN
 
 
-def render_level(scene: SceneMap, level_id: str, *, scale: int = 2) -> Image.Image:
-    """render 一個 level；`scale` 是每個 LDtk 像素放大幾倍。不改動場景地圖。"""
+Label = tuple[str, float, float]
+"""元素名稱與寫在哪裡：格座標，可以有小數（例如區域的正中央）。"""
+
+
+def render_level(
+    scene: SceneMap, level_id: str, *, scale: int = 2, labels: Sequence[Label] = ()
+) -> Image.Image:
+    """render 一個 level；`scale` 是每個 LDtk 像素放大幾倍。不改動場景地圖。
+
+    `labels` 是要寫上去的元素名稱；沒給就跟沒有規則檔的場景地圖一樣，不寫。
+    """
     if scale < 1:
         raise SceneError(f"倍率至少 1：{scale}")
     project = scene.project
@@ -104,18 +116,64 @@ def render_level(scene: SceneMap, level_id: str, *, scale: int = 2) -> Image.Ima
             boxes.append((edef, _entity_box(layer, ldef, edef, entity, scale)))
     # 方塊外的名稱先寫、再畫方塊：名稱可能比一格寬，不能蓋住別的 entity 方塊；
     # 寫在方塊裡的名稱最後寫，才不會被自己的方塊蓋掉
-    labels = [(edef["identifier"], _label_place(box, image.size[1], scale)) for edef, box in boxes]
+    entity_labels = [
+        (edef["identifier"], _label_place(box, image.size[1], scale)) for edef, box in boxes
+    ]
     font = _font(_label_size(scale))
-    for name, (xy, anchor, inside) in labels:
+    for name, (xy, anchor, inside) in entity_labels:
         if not inside:
             draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
     for edef, box in boxes:
         draw.rectangle(box, fill=_rgb(edef["color"]), outline=_LABEL)
-    for name, (xy, anchor, inside) in labels:
+    for name, (xy, anchor, inside) in entity_labels:
         if inside:
             draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
-    _draw_grid(draw, level, _label_grid(project, level, layer_defs, scale), scale)
+    origin = _label_grid(project, level, layer_defs, scale)
+    _draw_grid(draw, level, origin, scale)
+    _draw_names(draw, level, origin, labels, scale)
     return image
+
+
+def _draw_names(
+    draw: ImageDraw.ImageDraw,
+    level: Level,
+    origin: tuple[int, int, int],
+    labels: Sequence[Label],
+    scale: int,
+) -> None:
+    """元素名稱寫在格座標 (x, y) 上：淺色字加深色描邊；放不下時往內推，整個留在 level 裡。"""
+    grid, origin_x, origin_y = origin
+    font = _font(name_size(scale))
+    stroke = name_stroke(scale)
+    right = MARGIN + level["pxWid"] * scale - 1
+    bottom = MARGIN + level["pxHei"] * scale - 1
+    for name, x, y in labels:
+        cx = origin_x + x * grid * scale
+        cy = origin_y + y * grid * scale
+        left, top, end, low = draw.textbbox(
+            (0, 0), name, font=font, anchor="mm", stroke_width=stroke
+        )
+        cx = min(max(cx, MARGIN - left), right - end)
+        cy = min(max(cy, MARGIN - top), bottom - low)
+        draw.text(
+            (round(cx), round(cy)),
+            name,
+            fill=_LABEL,
+            font=font,
+            anchor="mm",
+            stroke_width=stroke,
+            stroke_fill=_FRAME,
+        )
+
+
+def name_size(scale: int) -> int:
+    """元素名稱的字級。"""
+    return max(12, 7 * scale)
+
+
+def name_stroke(scale: int) -> int:
+    """元素名稱描邊的寬度。"""
+    return max(2, scale)
 
 
 def _draw_intgrid(

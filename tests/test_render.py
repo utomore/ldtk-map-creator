@@ -4,16 +4,21 @@ import copy
 import io
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from PIL import Image
+from PIL import Image, ImageChops
 
 from ldtk_map_creator.core.edit import paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
+from ldtk_map_creator.core.generate import generate_scene
+from ldtk_map_creator.core.record import name_positions
 from ldtk_map_creator.core.render import MARGIN, image_size, render_level, write_preview
+from ldtk_map_creator.core.rules import AreaRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
+from tests.rule_strategies import placeable_village_rules
 
 FAST = settings(max_examples=30, deadline=None)
 
@@ -213,3 +218,74 @@ def test_example_label_in_one_row_level_stays_inside(tmp_path: Path) -> None:
     # 不含外框；字有反鋸齒，找比方塊顏色亮很多的像素（方塊的綠色分量是 0x4A）
     inside = [box.getpixel((x, y)) for x in range(2, 30) for y in range(2, 30)]
     assert any(isinstance(p, tuple) and p[1] > 150 for p in inside)
+
+
+@pytest.mark.law("RENDER-5")
+@settings(max_examples=40, deadline=None)
+@given(placeable_village_rules(), st.integers(1, 3), st.integers(0, 99))
+def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    names = name_positions(placed)
+    assume(names)
+    for name, x, y in names:  # 每個名稱都寫在自己的格上
+        assert (int(x), int(y)) in placed.cells[name], name
+    level = scene.level(r.level_name)
+    plain = render_level(scene, r.level_name, scale=scale)
+    one = [names[pick % len(names)]]
+    labelled = render_level(scene, r.level_name, scale=scale, labels=one)
+    assert (
+        labelled.tobytes() == render_level(scene, r.level_name, scale=scale, labels=one).tobytes()
+    )
+    box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
+    assert box is not None
+    left, top, right, bottom = box  # right、bottom 不含
+    inner_right = MARGIN + level["pxWid"] * scale
+    inner_bottom = MARGIN + level["pxHei"] * scale
+    assert left >= MARGIN and top >= MARGIN and right <= inner_right and bottom <= inner_bottom
+    # 放得下時以標示位置為中心（往內推過的就對齊推到的那一邊）
+    _, x, y = one[0]
+    cell = 16 * scale
+    for low, high, start, end, at in (
+        (left, right, MARGIN, inner_right, MARGIN + x * cell),
+        (top, bottom, MARGIN, inner_bottom, MARGIN + y * cell),
+    ):
+        half = (high - low) / 2
+        expected = min(max(at, start + half), end - half)
+        assert abs((low + high) / 2 - expected) <= cell / 2 + 2
+    # 淺色字加深色描邊：不管底下是什麼顏色都看得清楚
+    region = labelled.convert("L").crop(box)
+    darkest, lightest = cast(tuple[int, int], region.getextrema())
+    assert lightest >= 200 and darkest <= 60
+
+
+def test_example_long_name_at_the_corner_stays_inside() -> None:
+    """名稱比區域寬、區域又貼著 level 的角落時，名稱往內推，不跑出 level、不蓋到座標。"""
+    r = Rules(
+        0,
+        "L",
+        (12, 8),
+        (Kind("k", 1, "#000000"),),
+        (
+            AreaRule("a_rather_long_name", "k", (1, 1), at=(0, 0)),
+            AreaRule("another_long_name", "k", (1, 1), at=(11, 7)),
+        ),
+        (),
+        (),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    names = name_positions(placed)
+    level = scene.level("L")
+    for label in names:  # 左上角、右下角各一個；倍率 1 時字比格子高，上下也要往內推
+        plain = render_level(scene, "L", scale=1)
+        labelled = render_level(scene, "L", scale=1, labels=[label])
+        box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
+        assert box is not None
+        assert box[0] >= MARGIN and box[1] >= MARGIN, label
+        assert box[2] <= MARGIN + level["pxWid"] and box[3] <= MARGIN + level["pxHei"], label
+        # 超出圖的部分會被切掉、量不到；改比字的大小：跟寫在 level 中間時一樣大，才是沒被切
+        middle = render_level(scene, "L", scale=1, labels=[(label[0], 6, 4)])
+        free = ImageChops.difference(plain.convert("RGB"), middle.convert("RGB")).getbbox()
+        assert free is not None
+        assert (box[2] - box[0], box[3] - box[1]) == (free[2] - free[0], free[3] - free[1]), label

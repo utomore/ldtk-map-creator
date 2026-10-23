@@ -95,12 +95,14 @@ def _commit(
     iid: str | None = None,
     extra: dict[Path, bytes] | None = None,
     remove: set[Path] | None = None,
+    generated: dict[str, Any] | None = None,
 ) -> ActionResult:
     """寫回有變的 level 與它們的預覽圖；失敗時還原磁碟上動過的檔。
 
     - `before` 是操作前每個 level（以 iid 為鍵）的複本；None 表示全部都是新的。
     - `primary` 是這次操作的目標 level：就算內容沒變，也一定回傳它的預覽圖。
     - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）；`remove` 是要一起刪的檔。
+    - `generated` 是預覽圖要用的生成紀錄（寫上元素名稱）；None 就讀磁碟上的。
     """
     extra = extra or {}
     remove = remove or set()
@@ -114,7 +116,13 @@ def _commit(
         or _for_render(before.get(lv["iid"])) != _for_render(lv)
         or lv["identifier"] == primary
     ]
-    images = {level_id: rendering.render_level(target, level_id) for level_id in redraw}
+    generated = generated if generated is not None else _saved_record(target.path)
+    images = {
+        level_id: rendering.render_level(
+            target, level_id, labels=record.labels(generated, level_id)
+        )
+        for level_id in redraw
+    }
     folder = target.path.parent / target.path.stem
     names = {lv["identifier"] for lv in levels}
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
@@ -296,7 +304,8 @@ def delete_entity(path: Path, iid: str) -> ActionResult:
 def render_level(path: Path, level: str, *, scale: int = 2) -> ActionResult:
     """重新 render 一個 level 的預覽圖，不改動場景地圖。"""
     target = scene.load_scene(path)
-    image = rendering.render_level(target, level, scale=scale)
+    names = record.labels(_saved_record(path), level)
+    image = rendering.render_level(target, level, scale=scale, labels=names)
     return ActionResult(f"{level} 的預覽圖", (rendering.write_preview(target, level, image),))
 
 
@@ -339,7 +348,17 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     kept = {lv["identifier"].lower() for lv in target.project["levels"]}
     gone = [lv["identifier"] for lv in current.project["levels"]] if current else []
     remove = {rendering.preview_path(target, lv) for lv in gone if lv.lower() not in kept}
-    return _commit(target, before, summary, rules.level_name, extra=extra, remove=remove)
+    return _commit(
+        target, before, summary, rules.level_name, extra=extra, remove=remove, generated=new_record
+    )
+
+
+def _saved_record(path: Path) -> dict[str, Any] | None:
+    """預覽圖寫元素名稱用的生成紀錄；讀不了就不寫名稱，不擋操作。"""
+    try:
+        return record.read_record(path)
+    except SceneError:
+        return None
 
 
 def _content(current: SceneMap) -> record.Content:
