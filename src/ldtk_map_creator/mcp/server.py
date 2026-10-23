@@ -157,6 +157,7 @@ def add_entity_def(
     """新增一個 entity 定義。
 
     field_types 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
+    有 <名>.rules.toml 的場景地圖不要用這個：改規則檔再 generate_scene（D-008）。
     """
     return _reply(
         lambda: actions.add_entity_def(
@@ -172,7 +173,10 @@ def add_entity_def(
 
 @server.tool()
 def set_entity_fields(path: str, iid: str, values: dict[str, Any]) -> Reply:
-    """設定 entity 的欄位值（欄位名稱 → 值；null 是清空）。EntityRef 的值是目標 entity 的 iid。"""
+    """設定 entity 的欄位值（欄位名稱 → 值；null 是清空）。EntityRef 的值是目標 entity 的 iid。
+
+    有 <名>.rules.toml 的場景地圖不要用這個：改規則檔再 generate_scene（D-008）。
+    """
     return _reply(lambda: actions.set_entity_fields(Path(path), iid, values))
 
 

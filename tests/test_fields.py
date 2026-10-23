@@ -3,7 +3,7 @@
 import copy
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import given, settings
@@ -17,8 +17,10 @@ from ldtk_map_creator.core.edit import (
     move_entity,
     place_entity,
     set_entity_fields,
+    values_from_text,
 )
 from ldtk_map_creator.core.errors import SceneError
+from ldtk_map_creator.core.model import FieldInstance
 from ldtk_map_creator.core.render import render_level
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 from tests.ldtk_schema import level_file_errors, load_json, project_errors
@@ -132,7 +134,8 @@ def test_scene_6_7_fields_round_trip_and_refs_stay_valid(
             editor_id = {"Int": "V_Int", "Float": "V_Float", "Bool": "V_Bool"}.get(
                 f["__type"], "V_String"
             )
-            assert all(v["id"] == editor_id for v in f["realEditorValues"]), f
+            # 清空寫成 [null]（LDtk 的寫法）
+            assert all(v is None or v["id"] == editor_id for v in f["realEditorValues"]), f
         for name, value in expected[iid].items():
             if name != "target":
                 assert got[name] == value, (name, got[name], value)
@@ -140,7 +143,8 @@ def test_scene_6_7_fields_round_trip_and_refs_stay_valid(
         if target is None:
             assert got["target"] is None
             ref = next(f for f in instances if f["__identifier"] == "target")
-            assert ref["realEditorValues"] == []  # 清掉的引用連原始值都不留
+            # 沒設過是 []、清掉的是 [null]；原本的 iid 都不留
+            assert ref["realEditorValues"] in ([], [None])
         else:
             layer_iid, level_iid, _ = where[str(target)]
             assert got["target"] == {
@@ -258,7 +262,7 @@ def test_example_delete_clears_refs_to_it(tmp_path: Path) -> None:
     save_scene(scene)
     entity = _entities(load_scene(tmp_path / "scene.ldtk"))[b][2]
     ref = next(f for f in entity["fieldInstances"] if f["__identifier"] == "target")
-    assert ref["__value"] is None and ref["realEditorValues"] == []
+    assert ref["__value"] is None and ref["realEditorValues"] == [None]
 
 
 @pytest.mark.parametrize("behavior", ["MoveLastOne", "DiscardOldOnes"])
@@ -278,7 +282,7 @@ def test_example_max_count_keeps_fields_and_refs_right(behavior: str, tmp_path: 
         f for f in _entities(scene)[other][2]["fieldInstances"] if f["__identifier"] == "target"
     )
     if behavior == "DiscardOldOnes":
-        assert ref["realEditorValues"] == [] and ref["__value"] is None
+        assert ref["realEditorValues"] == [None] and ref["__value"] is None
     else:
         assert new["iid"] == old and ref["__value"]["entityIid"] == old
 
@@ -398,3 +402,93 @@ def test_scene_5_field_actions_keep_disk_and_preview_current(tmp_path: Path) -> 
     with pytest.raises(SceneError):
         actions.set_entity_fields(path, a, {"n": "x"})
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_example_ldtk_null_value_and_default_override(tmp_path: Path) -> None:
+    """LDtk 清掉設過的值會存成 `[null]`：讀得懂；有預設值的欄位清掉後是空的，不是預設值。"""
+    scene = _scene(tmp_path, split=True)
+    portal = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Portal")
+    label = next(f for f in portal["fieldDefs"] if f["identifier"] == "label")
+    label["defaultOverride"] = {"id": "V_String", "params": ["door"]}
+    entity = place_entity(scene, "Village", "Portal", x=0, y=0)
+    assert {f["__identifier"]: f["__value"] for f in entity["fieldInstances"]}["label"] == "door"
+    set_entity_fields(scene, entity["iid"], {"label": None})
+    got = {f["__identifier"]: f for f in entity["fieldInstances"]}["label"]
+    assert got["__value"] is None and got["realEditorValues"] == [None]
+    save_scene(scene)  # LDtk 存的 [null] 照樣讀得進來、寫得出去
+    assert load_scene(tmp_path / "scene.ldtk") is not None
+
+
+def test_example_write_goes_to_the_instance_refresh_uses(tmp_path: Path) -> None:
+    """同一個欄位有兩個實例時，設定寫進 refresh 認的那個（第一個），值才會生效。"""
+    scene = _scene(tmp_path, split=True)
+    entity = place_entity(scene, "Village", "Portal", x=0, y=0)
+    entity["fieldInstances"].append(copy.deepcopy(entity["fieldInstances"][0]))
+    set_entity_fields(scene, entity["iid"], {"count": 5})
+    first = next(f for f in entity["fieldInstances"] if f["__identifier"] == "count")
+    assert first["__value"] == 5
+
+
+def test_example_move_last_one_keeps_same_level_refs(tmp_path: Path) -> None:
+    """數量上限挪 entity 到別的 level 時，只能指同一個 level 的引用不能被弄成跨 level。"""
+    scene = _scene(tmp_path, split=True)
+    portal = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Portal")
+    portal["maxCount"], portal["limitBehavior"], portal["limitScope"] = 2, "MoveLastOne", "PerWorld"
+    target = next(f for f in portal["fieldDefs"] if f["identifier"] == "target")
+    target["allowOutOfLevelRef"] = False
+    a = place_entity(scene, "Village", "Portal", x=0, y=0)["iid"]
+    place_entity(scene, "Village", "Portal", x=1, y=1, values={"target": a})
+    before = copy.deepcopy(scene.project)
+    with pytest.raises(SceneError, match="level"):
+        place_entity(scene, "House", "Portal", x=2, y=2)  # 會把指向 a 的那個挪到 House
+    assert scene.project == before
+
+
+def test_example_new_ref_field_can_point_to_any_entity(tmp_path: Path) -> None:
+    """add_entity_def 建的 EntityRef 哪一種 entity 都能指（範本預設只能指同一種）。"""
+    scene = _scene(tmp_path, split=True)
+    add_entity_def(scene, "Door", field_types={"switch": "EntityRef"})
+    switch = place_entity(scene, "Village", "Spawn", x=0, y=0)["iid"]
+    door = place_entity(scene, "Village", "Door", x=1, y=1, values={"switch": switch})
+    ref = next(f for f in door["fieldInstances"] if f["__identifier"] == "switch")
+    assert cast(dict[str, object], ref["__value"])["entityIid"] == switch
+
+
+def test_example_describe_lists_fields(tmp_path: Path) -> None:
+    """describe_scene 列出定義有哪些欄位、每個 entity 的欄位值，agent 才知道能設什麼。"""
+    path = tmp_path / "scene.ldtk"
+    actions.create_scene(path)
+    actions.add_entity_def(path, "Sign", field_types={"label": "String"})
+    actions.place_entity(path, "Level_0", "Sign", x=0, y=0, values={"label": "hi"})
+    text = actions.describe_scene(path).summary
+    assert "label：String" in text and "label = 'hi'" in text
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected"),
+    [
+        ({"label": "123", "n": "4"}, {"label": "123", "n": 4}),
+        ({"label": "true", "on": "true", "x": "1.5"}, {"label": "true", "on": True, "x": 1.5}),
+        ({"label": "null", "n": "null"}, {"label": "null", "n": None}),
+    ],
+)
+def test_example_cli_text_follows_field_type(
+    texts: dict[str, str], expected: dict[str, object], tmp_path: Path
+) -> None:
+    """CLI 的 名稱=值 照欄位型別轉：String 欄位的 123、true 是字串；其他型別的 null 是清空。"""
+    scene = _scene(tmp_path, split=True)
+    edef = add_entity_def(
+        scene, "Sign", field_types={"label": "String", "n": "Int", "on": "Bool", "x": "Float"}
+    )
+    assert values_from_text(edef, texts) == expected
+    with pytest.raises(SceneError):
+        values_from_text(edef, {"n": "four"})
+
+
+def test_example_delete_with_instance_missing_def_uid(tmp_path: Path) -> None:
+    """手改過的檔有沒有 defUid 的欄位實例：刪 entity 照樣能刪，不當掉。"""
+    scene = _scene(tmp_path, split=True)
+    entity = place_entity(scene, "Village", "Portal", x=0, y=0)
+    entity["fieldInstances"].append(cast(FieldInstance, {"__identifier": "odd", "__value": 1}))
+    other = place_entity(scene, "House", "Portal", x=0, y=0)["iid"]
+    delete_entity(scene, other)

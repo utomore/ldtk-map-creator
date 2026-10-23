@@ -89,19 +89,28 @@ def _check_ref(
 
 
 def set_value(instance: FieldInstance, fdef: FieldDef, value: object) -> None:
-    """寫進 `realEditorValues`；`__value` 留給 refresh 重算。值要先經過 check_value。"""
+    """寫進 `realEditorValues`；`__value` 留給 refresh 重算。值要先經過 check_value。
+
+    清空寫成 `[null]`（LDtk 清掉一個設過的值也這樣寫），有預設值的欄位清掉才會是空的。
+    """
     if value is None:
-        instance["realEditorValues"] = []
+        instance["realEditorValues"] = [None]
     else:
         instance["realEditorValues"] = [{"id": _EDITOR_IDS[fdef["__type"]], "params": [value]}]
 
 
 def raw_value(instance: FieldInstance, fdef: FieldDef) -> object:
-    """欄位的值：設過的值，否則是預設值。EntityRef 是目標的 iid。"""
+    """欄位的值：設過的值，否則是預設值。EntityRef 是目標的 iid。
+
+    `realEditorValues` 是 `[]` 表示沒設過（用預設值）；`[null]` 表示明確設成空的。
+    """
     for entry in instance["realEditorValues"]:
+        if not isinstance(entry, dict):
+            return None
         params = cast(dict[str, object], entry).get("params")
         if isinstance(params, list) and params:
             return cast(list[object], params)[0]
+        return None
     override = fdef["defaultOverride"]
     if isinstance(override, dict):
         params = cast(dict[str, object], override).get("params")
@@ -119,6 +128,32 @@ def new_instance(fdef: FieldDef) -> FieldInstance:
         "defUid": fdef["uid"],
         "realEditorValues": [],
     }
+
+
+def has_refs(project: Project) -> bool:
+    """場景地圖裡有沒有 EntityRef 欄位；沒有就不用建 locations。"""
+    return any(
+        f["__type"] == "EntityRef" for d in project["defs"]["entities"] for f in d["fieldDefs"]
+    )
+
+
+def parse_text(fdef: FieldDef, text: str) -> object:
+    """把文字照欄位型別轉成值（CLI 用）；`null` 是清空，String 欄位的文字照原樣。"""
+    kind = fdef["__type"]
+    if text == "null" and kind != "String":
+        return None
+    try:
+        if kind == "Int":
+            return int(text)
+        if kind == "Float":
+            return float(text)
+    except ValueError as error:
+        raise SceneError(f"欄位 {fdef['identifier']} 要是 {kind}：{text!r}") from error
+    if kind == "Bool":
+        if text not in ("true", "false"):
+            raise SceneError(f"欄位 {fdef['identifier']} 要是 true 或 false：{text!r}")
+        return text == "true"
+    return text
 
 
 def locations(project: Project) -> Locations:
@@ -180,7 +215,7 @@ def clear_refs_to(project: Project, iid: str) -> bool:
 
     回傳有沒有清到。
     """
-    defs = {
+    defs: dict[object, FieldDef] = {
         f["uid"]: f
         for d in project["defs"]["entities"]
         for f in d["fieldDefs"]
@@ -191,8 +226,8 @@ def clear_refs_to(project: Project, iid: str) -> bool:
         for layer in level["layerInstances"] or []:
             for entity in layer["entityInstances"]:
                 for instance in entity["fieldInstances"]:
-                    fdef = defs.get(instance["defUid"])
+                    fdef = defs.get(cast(dict[str, object], instance).get("defUid"))
                     if fdef is not None and raw_value(instance, fdef) == iid:
-                        instance["realEditorValues"] = []
+                        instance["realEditorValues"] = [None]
                         cleared = True
     return cleared

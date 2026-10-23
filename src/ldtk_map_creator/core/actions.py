@@ -182,7 +182,9 @@ def _describe(target: SceneMap) -> str:
         lines.append(f"  - {ldef['identifier']}（{ldef['type']}，{ldef['gridSize']}px{extra}）")
     lines.append("entity 定義：")
     for edef in project["defs"]["entities"]:
-        lines.append(f"  - {edef['identifier']}（{edef['width']}x{edef['height']}px）")
+        listed = "、".join(f"{f['identifier']}：{f['__type']}" for f in edef["fieldDefs"])
+        extra = f"，欄位：{listed}" if listed else ""
+        lines.append(f"  - {edef['identifier']}（{edef['width']}x{edef['height']}px{extra}）")
     lines.append("level：")
     for level in project["levels"]:
         cols = cell_count(level["pxWid"], grid)
@@ -195,6 +197,11 @@ def _describe(target: SceneMap) -> str:
             for entity in layer["entityInstances"]:
                 gx, gy = entity["__grid"]
                 lines.append(f"      {entity['__identifier']} 在 ({gx}, {gy})，iid {entity['iid']}")
+                for value in entity["fieldInstances"]:
+                    shown = value["__value"]
+                    if isinstance(shown, dict) and "entityIid" in shown:
+                        shown = f"→ {cast(dict[str, object], shown)['entityIid']}"
+                    lines.append(f"        {value['__identifier']} = {shown!r}")
     return "\n".join(lines)
 
 
@@ -275,11 +282,20 @@ def place_entity(
     y: int,
     layer: str | None = None,
     values: dict[str, object] | None = None,
+    texts: dict[str, str] | None = None,
 ) -> ActionResult:
-    """在 (x, y) 格擺一個 entity；`values` 是欄位值（欄位名稱 → 值）。"""
+    """在 (x, y) 格擺一個 entity；`values` 是欄位值（欄位名稱 → 值）。
+
+    `texts` 是文字寫的欄位值（CLI 用），照欄位型別轉換後跟 `values` 合在一起。
+    """
 
     def change(target: SceneMap) -> tuple[str, str, str | None]:
-        placed = edit.place_entity(target, level, entity, x=x, y=y, layer=layer, values=values)
+        merged = dict(values or {})
+        if texts:
+            merged |= edit.values_from_text(edit.entity_def_named(target, entity), texts)
+        placed = edit.place_entity(
+            target, level, entity, x=x, y=y, layer=layer, values=merged or None
+        )
         return f"{level}：{entity} 擺在 ({x},{y})，iid {placed['iid']}", level, placed["iid"]
 
     return _apply(path, change)
@@ -321,6 +337,7 @@ def add_entity_def(
     """新增一個 entity 定義。
 
     `field_types` 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
+    從規則生成的場景地圖這樣改，下次重新生成會被擋下來（D-008）；要加就寫進規則檔。
     """
 
     def change(target: SceneMap) -> tuple[str, str, str | None]:
@@ -337,13 +354,28 @@ def add_entity_def(
 
 
 @_serialized
-def set_entity_fields(path: Path, iid: str, values: dict[str, object]) -> ActionResult:
-    """設定 entity 的欄位值（欄位名稱 → 值；null 是清空）。"""
+def set_entity_fields(
+    path: Path,
+    iid: str,
+    values: dict[str, object] | None = None,
+    *,
+    texts: dict[str, str] | None = None,
+) -> ActionResult:
+    """設定 entity 的欄位值（欄位名稱 → 值；null 是清空）。
+
+    `texts` 是文字寫的欄位值（CLI 用），照欄位型別轉換後跟 `values` 合在一起。
+    從規則生成的場景地圖這樣改，下次重新生成會被擋下來（D-008）；要改就改規則檔。
+    """
 
     def change(target: SceneMap) -> tuple[str, str, str | None]:
-        entity = edit.set_entity_fields(target, iid, values)
+        merged = dict(values or {})
+        if texts:
+            merged |= edit.values_from_text(edit.entity_def_of(target, iid), texts)
+        if not merged:
+            raise SceneError("沒有要設定的欄位")
+        entity = edit.set_entity_fields(target, iid, merged)
         level, _, _ = edit.find_entity(target, iid)
-        listed = "、".join(f"{k} = {v!r}" for k, v in values.items())
+        listed = "、".join(f"{k} = {v!r}" for k, v in merged.items())
         return f"{entity['__identifier']}（{iid}）：{listed}", level["identifier"], None
 
     return _apply(path, change)

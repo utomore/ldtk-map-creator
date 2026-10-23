@@ -36,8 +36,8 @@ def refresh_derived(project: Project, only: Level | None = None) -> None:
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
     tileset_paths = {t["uid"]: t["relPath"] for t in project["defs"]["tilesets"]}
-    # EntityRef 可以跨 level，只重算一個 level 時也要看整個場景地圖
-    where = fields.locations(project)
+    # EntityRef 可以跨 level，只重算一個 level 時也要看整個場景地圖；沒有 EntityRef 就不用建
+    where = fields.locations(project) if fields.has_refs(project) else {}
     for level in project["levels"] if only is None else [only]:
         _refresh_level(project, level, layer_defs, entity_defs, tileset_paths, where)
         if only is None:
@@ -63,12 +63,12 @@ def _used_uids(project: Project) -> list[int]:
     return used
 
 
-def allocate_uid(project: Project) -> int:
-    """配一個沒人用的 uid（新的定義用），並推進 `nextUid`。"""
+def allocate_uids(project: Project, count: int) -> list[int]:
+    """配 `count` 個沒人用的 uid（新的定義用），並推進 `nextUid`；只掃一次。"""
     project["nextUid"] = max([project["nextUid"], *(u + 1 for u in _used_uids(project))])
-    uid = project["nextUid"]
-    project["nextUid"] += 1
-    return uid
+    start = project["nextUid"]
+    project["nextUid"] += count
+    return list(range(start, start + count))
 
 
 def _assign_ids(project: Project) -> None:

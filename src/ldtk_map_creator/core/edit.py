@@ -5,11 +5,21 @@
 """
 
 import re
+from typing import cast
 
 from . import fields, template
-from .derived import allocate_uid, cell_count, cell_to_px, refresh_derived
+from .derived import allocate_uids, cell_count, cell_to_px, refresh_derived
 from .errors import SceneError
-from .model import EntityDef, EntityInstance, LayerDef, LayerInstance, Level, Project
+from .model import (
+    EntityDef,
+    EntityInstance,
+    FieldDef,
+    FieldInstance,
+    LayerDef,
+    LayerInstance,
+    Level,
+    Project,
+)
 from .scene import IDENTIFIER, SceneMap
 
 _COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
@@ -227,6 +237,7 @@ def place_entity(
     _check_values(scene.project, edef, values or {}, where, (edef["uid"], level["iid"]))
     if behavior == "MoveLastOne":
         old_layer, moved = existing[-1]
+        _check_move_refs(scene.project, moved, values or {}, level["iid"])
         old_layer["entityInstances"].remove(moved)
         moved["px"] = px
         _write_values(edef, moved, values or {})
@@ -250,6 +261,41 @@ def place_entity(
     return instance
 
 
+def _check_move_refs(
+    project: Project, moved: EntityInstance, values: dict[str, object], new_level: str
+) -> None:
+    """entity 挪到別的 level 時，不能跨 level 的引用（它指出去的、別人指向它的）都要還成立。"""
+    where = fields.locations(project)
+    old_level = where[moved["iid"]][1]
+    if old_level == new_level:
+        return
+    defs: dict[object, FieldDef] = {
+        f["uid"]: f for d in project["defs"]["entities"] for f in d["fieldDefs"]
+    }
+    for instance in moved["fieldInstances"]:
+        fdef = defs.get(cast(dict[str, object], instance).get("defUid"))
+        if fdef is None or fdef["__type"] != "EntityRef" or fdef["allowOutOfLevelRef"]:
+            continue
+        target = values.get(fdef["identifier"], fields.raw_value(instance, fdef))
+        if isinstance(target, str) and target in where and where[target][1] != new_level:
+            raise SceneError(f"挪過去之後，欄位 {fdef['identifier']} 會指到別的 level，定義不允許")
+    for level in project["levels"]:
+        for layer in level["layerInstances"] or []:
+            for entity in layer["entityInstances"]:
+                for instance in entity["fieldInstances"]:
+                    fdef = defs.get(cast(dict[str, object], instance).get("defUid"))
+                    if fdef is None or fdef["__type"] != "EntityRef" or fdef["allowOutOfLevelRef"]:
+                        continue
+                    if (
+                        fields.raw_value(instance, fdef) == moved["iid"]
+                        and level["iid"] != new_level
+                    ):
+                        name = fdef["identifier"]
+                        raise SceneError(
+                            f"{entity['iid']} 的欄位 {name} 只能指同一個 level，不能挪走"
+                        )
+
+
 def _check_values(
     project: Project,
     edef: EntityDef,
@@ -268,7 +314,10 @@ def _check_values(
 
 def _write_values(edef: EntityDef, entity: EntityInstance, values: dict[str, object]) -> None:
     by_name = {f["identifier"]: f for f in edef["fieldDefs"]}
-    by_uid = {f["defUid"]: f for f in entity["fieldInstances"]}
+    # 同一個欄位有好幾個實例時寫第一個，跟 refresh 認的同一個
+    by_uid: dict[object, FieldInstance] = {}
+    for f in entity["fieldInstances"]:
+        by_uid.setdefault(cast(dict[str, object], f).get("defUid"), f)
     for name, value in values.items():
         fdef = by_name[name]
         instance = by_uid.get(fdef["uid"])
@@ -276,6 +325,29 @@ def _write_values(edef: EntityDef, entity: EntityInstance, values: dict[str, obj
             instance = fields.new_instance(fdef)
             entity["fieldInstances"].append(instance)
         fields.set_value(instance, fdef, value)
+
+
+def values_from_text(edef: EntityDef, texts: dict[str, str]) -> dict[str, object]:
+    """把文字的欄位值照欄位型別轉成值（CLI 用）；欄位不存在丟 SceneError。"""
+    by_name = {f["identifier"]: f for f in edef["fieldDefs"]}
+    values: dict[str, object] = {}
+    for name, text in texts.items():
+        fdef = by_name.get(name)
+        if fdef is None:
+            raise SceneError(f"entity {edef['identifier']} 沒有欄位 {name}；有的：{list(by_name)}")
+        values[name] = fields.parse_text(fdef, text)
+    return values
+
+
+def entity_def_of(scene: SceneMap, iid: str) -> EntityDef:
+    """一個 entity 的定義。"""
+    _, _, entity = find_entity(scene, iid)
+    return _entity_def_by_uid(scene.project, entity["defUid"])
+
+
+def entity_def_named(scene: SceneMap, identifier: str) -> EntityDef:
+    """用名稱找 entity 定義。"""
+    return _entity_def_by_name(scene.project, identifier)
 
 
 def set_entity_fields(scene: SceneMap, iid: str, values: dict[str, object]) -> EntityInstance:
@@ -321,16 +393,19 @@ def add_entity_def(
             raise SceneError(f"欄位 {name} 的型別要是 {'、'.join(fields.FIELD_TYPES)}：{kind}")
     if len({n.lower() for n in wanted}) != len(wanted):
         raise SceneError(f"欄位名稱重複（不分大小寫）：{list(wanted)}")
+    uids = allocate_uids(project, 1 + len(wanted))
     edef = template.entity_def()
     edef["identifier"] = identifier
-    edef["uid"] = allocate_uid(project)
+    edef["uid"] = uids[0]
     edef["color"] = color
     edef["width"] = width
     edef["height"] = height
-    for name, kind in wanted.items():
+    for (name, kind), uid in zip(wanted.items(), uids[1:], strict=True):
         fdef = template.field_def(kind)
         fdef["identifier"] = name
-        fdef["uid"] = allocate_uid(project)
+        fdef["uid"] = uid
+        # 範本的 EntityRef 只能指同一種 entity；對話裡沒地方改，新建的放寬成哪一種都能指
+        fdef["allowedRefs"] = "Any"
         edef["fieldDefs"].append(fdef)
     project["defs"]["entities"].append(edef)
     return edef
