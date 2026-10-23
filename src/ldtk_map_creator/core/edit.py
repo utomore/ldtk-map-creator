@@ -208,26 +208,35 @@ def place_entity(
     grid, width, height = _grid_size(scene.project, level, target)
     _check_inside(width, height, [(x, y)], level)
     edef = _entity_def_by_name(scene.project, entity)
-    _check_values(scene.project, edef, values or {})
+    unsupported = [f["identifier"] for f in edef["fieldDefs"] if not fields.managed(f)]
+    if unsupported:
+        raise SceneError(f"entity {entity} 有還不支援的欄位型別（{unsupported}），先不擺")
     _check_toc(edef)
     _check_tags(scene.project, target, edef)
     refresh_derived(scene.project, only=level)  # 先確定這個 level 本身沒問題，才動資料
     px = [cell_to_px(x, edef["pivotX"], grid), cell_to_px(y, edef["pivotY"], grid)]
     existing = _scope_instances(scene, level, target, edef)
-    if edef["maxCount"] > 0 and len(existing) >= edef["maxCount"]:
-        behavior = edef["limitBehavior"]
-        if behavior == "MoveLastOne":
-            old_layer, moved = existing[-1]
-            old_layer["entityInstances"].remove(moved)
-            moved["px"] = px
-            target["entityInstances"].append(moved)
-            refresh_derived(scene.project)
-            return moved
-        if behavior == "DiscardOldOnes":
-            old_layer, oldest = existing[0]
-            old_layer["entityInstances"].remove(oldest)
-        else:
-            raise SceneError(f"entity {entity} 在 {edef['limitScope']} 最多 {edef['maxCount']} 個")
+    full = edef["maxCount"] > 0 and len(existing) >= edef["maxCount"]
+    behavior = edef["limitBehavior"] if full else None
+    if behavior not in (None, "MoveLastOne", "DiscardOldOnes"):
+        raise SceneError(f"entity {entity} 在 {edef['limitScope']} 最多 {edef['maxCount']} 個")
+    where = fields.locations(scene.project)
+    discarded = existing[0][1]["iid"] if behavior == "DiscardOldOnes" else None
+    if discarded is not None:
+        where.pop(discarded)  # 要丟掉的那個不能再被指
+    _check_values(scene.project, edef, values or {}, where, (edef["uid"], level["iid"]))
+    if behavior == "MoveLastOne":
+        old_layer, moved = existing[-1]
+        old_layer["entityInstances"].remove(moved)
+        moved["px"] = px
+        _write_values(edef, moved, values or {})
+        target["entityInstances"].append(moved)
+        refresh_derived(scene.project)
+        return moved
+    if discarded is not None:
+        old_layer, oldest = existing[0]
+        old_layer["entityInstances"].remove(oldest)
+        fields.clear_refs_to(scene.project, discarded)
     instance = template.entity()
     instance["iid"] = ""
     instance["defUid"] = edef["uid"]
@@ -237,19 +246,24 @@ def place_entity(
     instance["fieldInstances"] = [fields.new_instance(f) for f in edef["fieldDefs"]]
     _write_values(edef, instance, values or {})
     target["entityInstances"].append(instance)
-    refresh_derived(scene.project, only=level)
+    refresh_derived(scene.project, only=None if discarded else level)
     return instance
 
 
-def _check_values(project: Project, edef: EntityDef, values: dict[str, object]) -> None:
-    """欄位名稱都存在、值的型別都對；先檢查完才動資料。"""
+def _check_values(
+    project: Project,
+    edef: EntityDef,
+    values: dict[str, object],
+    where: fields.Locations,
+    owner: tuple[int, str],
+) -> None:
+    """欄位名稱都存在、值都對；先檢查完才動資料。`owner` 是（定義 uid, level iid）。"""
     by_name = {f["identifier"]: f for f in edef["fieldDefs"]}
-    where = fields.locations(project)
     for name, value in values.items():
         fdef = by_name.get(name)
         if fdef is None:
             raise SceneError(f"entity {edef['identifier']} 沒有欄位 {name}；有的：{list(by_name)}")
-        fields.check_value(fdef, value, where)
+        fields.check_value(project, fdef, value, where, owner)
 
 
 def _write_values(edef: EntityDef, entity: EntityInstance, values: dict[str, object]) -> None:
@@ -268,8 +282,10 @@ def set_entity_fields(scene: SceneMap, iid: str, values: dict[str, object]) -> E
     """設定一個 entity 的欄位值（欄位名稱 → 值；None 是清空）；回傳那個 entity。"""
     level, _, entity = find_entity(scene, iid)
     edef = _entity_def_by_uid(scene.project, entity["defUid"])
-    _check_values(scene.project, edef, values)
     _check_toc(edef)
+    refresh_derived(scene.project, only=level)  # 先確定這個 level 本身沒問題，才動資料
+    where = fields.locations(scene.project)
+    _check_values(scene.project, edef, values, where, (edef["uid"], level["iid"]))
     _write_values(edef, entity, values)
     refresh_derived(scene.project, only=level)
     return entity
@@ -348,5 +364,6 @@ def delete_entity(scene: SceneMap, iid: str) -> Level:
     level, layer, entity = find_entity(scene, iid)
     _check_toc(_entity_def_by_uid(scene.project, entity["defUid"]))
     layer["entityInstances"].remove(entity)
-    fields.clear_refs_to(scene.project, iid)  # 指向它的 EntityRef 一起清掉，跟 LDtk 一樣
+    if fields.clear_refs_to(scene.project, iid):  # 指向它的 EntityRef 一起清掉，跟 LDtk 一樣
+        refresh_derived(scene.project)  # 別的 level 的 __value 也要跟著變
     return level

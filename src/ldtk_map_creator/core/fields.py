@@ -11,6 +11,7 @@ LDtk 1.5.3 的寫法（maps/fields-template 實測）：
 """
 
 import copy
+import math
 from typing import cast
 
 from .errors import SceneError
@@ -21,8 +22,8 @@ _EDITOR_IDS = {"Int": "V_Int", "Float": "V_Float", "Bool": "V_Bool", "String": "
 _EDITOR_IDS["EntityRef"] = "V_String"
 _DEFAULTS: dict[str, object] = {"Int": 0, "Float": 0, "Bool": False}
 
-# entity 的 iid → （圖層 iid, level iid）
-Locations = dict[str, tuple[str, str]]
+# entity 的 iid → （圖層 iid, level iid, 定義的 uid）
+Locations = dict[str, tuple[str, str, int]]
 
 
 def managed(fdef: FieldDef) -> bool:
@@ -30,8 +31,13 @@ def managed(fdef: FieldDef) -> bool:
     return not fdef["isArray"] and fdef["__type"] in FIELD_TYPES
 
 
-def check_value(fdef: FieldDef, value: object, locations: Locations) -> None:
-    """值的型別對不對；EntityRef 要指向存在的 entity。不對丟 SceneError。"""
+def check_value(
+    project: Project, fdef: FieldDef, value: object, where: Locations, owner: tuple[int, str]
+) -> None:
+    """值對不對：型別、範圍；EntityRef 要指向存在、而且定義允許的 entity。不對丟 SceneError。
+
+    `owner` 是擁有這個欄位的 entity 的（定義 uid, level iid）。
+    """
     name, kind = fdef["identifier"], fdef["__type"]
     if not managed(fdef):
         raise SceneError(f"欄位 {name} 的型別 {kind} 還不支援設定")
@@ -48,8 +54,38 @@ def check_value(fdef: FieldDef, value: object, locations: Locations) -> None:
     }[kind]
     if not ok:
         raise SceneError(f"欄位 {name} 要是 {kind}：{value!r}")
-    if kind == "EntityRef" and value not in locations:
-        raise SceneError(f"欄位 {name} 指向不存在的 entity {value}")
+    if kind in ("Int", "Float"):
+        number = cast(float, value)
+        if not math.isfinite(number):  # NaN 寫進 JSON 會讓檔案壞掉
+            raise SceneError(f"欄位 {name} 要是有限的數字：{value!r}")
+        low, high = fdef["min"], fdef["max"]
+        if (low is not None and number < low) or (high is not None and number > high):
+            raise SceneError(f"欄位 {name} 要在 {low}～{high} 之間：{value!r}")
+    if kind == "EntityRef":
+        _check_ref(project, fdef, cast(str, value), where, owner)
+
+
+def _check_ref(
+    project: Project, fdef: FieldDef, target: str, where: Locations, owner: tuple[int, str]
+) -> None:
+    """照欄位定義的 allowedRefs 與 allowOutOfLevelRef 檢查（跟 LDtk 一樣）。"""
+    name = fdef["identifier"]
+    if target not in where:
+        raise SceneError(f"欄位 {name} 指向不存在的 entity {target}")
+    _, level_iid, def_uid = where[target]
+    owner_def, owner_level = owner
+    if not fdef["allowOutOfLevelRef"] and level_iid != owner_level:
+        raise SceneError(f"欄位 {name} 只能指向同一個 level 的 entity")
+    allowed = fdef["allowedRefs"]
+    if allowed == "OnlySame" and def_uid != owner_def:
+        raise SceneError(f"欄位 {name} 只能指向同一種 entity")
+    if allowed == "OnlySpecificEntity" and def_uid != fdef["allowedRefsEntityUid"]:
+        raise SceneError(f"欄位 {name} 只能指向定義指定的那一種 entity")
+    if allowed == "OnlyTags":
+        none: list[str] = []
+        tags = next((d["tags"] for d in project["defs"]["entities"] if d["uid"] == def_uid), none)
+        if not set(tags) & set(fdef["allowedRefTags"]):
+            raise SceneError(f"欄位 {name} 只能指向帶 {fdef['allowedRefTags']} 標籤的 entity")
 
 
 def set_value(instance: FieldInstance, fdef: FieldDef, value: object) -> None:
@@ -91,7 +127,7 @@ def locations(project: Project) -> Locations:
     for level in project["levels"]:
         for layer in level["layerInstances"] or []:
             for entity in layer["entityInstances"]:
-                found[entity["iid"]] = (layer["iid"], level["iid"])
+                found[entity["iid"]] = (layer["iid"], level["iid"], entity["defUid"])
     return found
 
 
@@ -104,8 +140,10 @@ def refresh_fields(
 
     指向已經不存在的 entity 的 EntityRef，`__value` 是 null。
     """
-    existing = {cast(dict[str, object], f).get("defUid"): f for f in entity["fieldInstances"]}
-    known = {f["uid"] for f in edef["fieldDefs"]}
+    # 同一個定義有好幾個實例時（手改過的檔），第一個是它的，其餘當成對不上的原樣留著
+    existing: dict[object, FieldInstance] = {}
+    for f in entity["fieldInstances"]:
+        existing.setdefault(cast(dict[str, object], f).get("defUid"), f)
     rebuilt: list[FieldInstance] = []
     for fdef in edef["fieldDefs"]:
         instance = existing.get(fdef["uid"]) or new_instance(fdef)
@@ -120,16 +158,15 @@ def refresh_fields(
                 instance["__value"] = copy.deepcopy(value)
         rebuilt.append(instance)
     # 對不上定義的實例不是這裡管的，原樣留在最後（D-006）
-    rebuilt += [
-        f for f in entity["fieldInstances"] if cast(dict[str, object], f).get("defUid") not in known
-    ]
+    kept = {id(f) for f in rebuilt}
+    rebuilt += [f for f in entity["fieldInstances"] if id(f) not in kept]
     entity["fieldInstances"] = rebuilt
 
 
 def _ref_value(project: Project, target: object, where: Locations) -> object:
     if not isinstance(target, str) or target not in where:
         return None
-    layer_iid, level_iid = where[target]
+    layer_iid, level_iid, _ = where[target]
     return {
         "entityIid": target,
         "layerIid": layer_iid,
@@ -138,14 +175,18 @@ def _ref_value(project: Project, target: object, where: Locations) -> object:
     }
 
 
-def clear_refs_to(project: Project, iid: str) -> None:
-    """把所有指向 `iid` 的 EntityRef 清成空的（刪掉 entity 時用，LDtk 也這樣做）。"""
+def clear_refs_to(project: Project, iid: str) -> bool:
+    """把所有指向 `iid` 的 EntityRef 清成空的（刪掉 entity 時用，LDtk 也這樣做）。
+
+    回傳有沒有清到。
+    """
     defs = {
         f["uid"]: f
         for d in project["defs"]["entities"]
         for f in d["fieldDefs"]
         if f["__type"] == "EntityRef" and not f["isArray"]
     }
+    cleared = False
     for level in project["levels"]:
         for layer in level["layerInstances"] or []:
             for entity in layer["entityInstances"]:
@@ -153,3 +194,5 @@ def clear_refs_to(project: Project, iid: str) -> None:
                     fdef = defs.get(instance["defUid"])
                     if fdef is not None and raw_value(instance, fdef) == iid:
                         instance["realEditorValues"] = []
+                        cleared = True
+    return cleared

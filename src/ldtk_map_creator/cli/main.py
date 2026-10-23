@@ -1,6 +1,7 @@
 """CLI 入口：每個操作一個子指令，只轉呼叫 core.actions（P-003）。"""
 
 import argparse
+import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -13,6 +14,25 @@ from ..core.errors import SceneError
 def _cell(text: str) -> tuple[int, int]:
     x, _, y = text.partition(",")
     return int(x), int(y)
+
+
+def _field_value(text: str) -> tuple[str, object]:
+    """`名稱=值`；值照 JSON 讀（3、1.5、true、null、"字串"），讀不了就當字串。"""
+    name, sep, raw = text.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"欄位要寫成 名稱=值：{text}")
+    try:
+        return name, json.loads(raw)
+    except json.JSONDecodeError:
+        return name, raw
+
+
+def _field_type(text: str) -> tuple[str, str]:
+    """`名稱:型別`，例如 target:EntityRef。"""
+    name, sep, kind = text.partition(":")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"欄位要寫成 名稱:型別：{text}")
+    return name, kind
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -54,6 +74,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
     p.add_argument("--layer")
+    p.add_argument("--field", type=_field_value, action="append", default=[], help="名稱=值")
     p = command("move_entity", "移動 entity")
     p.add_argument("iid")
     p.add_argument("x", type=int)
@@ -63,6 +84,15 @@ def _parser() -> argparse.ArgumentParser:
     p = command("render_level", "重新 render 預覽圖")
     p.add_argument("level")
     p.add_argument("--scale", type=int, default=2)
+    p = command("add_entity_def", "新增一個 entity 定義")
+    p.add_argument("identifier")
+    p.add_argument("--color", default="#BE4A2F")
+    p.add_argument("--width", type=int, default=16)
+    p.add_argument("--height", type=int, default=16)
+    p.add_argument("--field", type=_field_type, action="append", default=[], help="名稱:型別")
+    p = command("set_entity_fields", "設定 entity 的欄位值")
+    p.add_argument("iid")
+    p.add_argument("fields", type=_field_value, nargs="+", help="名稱=值")
     p = command("generate_scene", "照 <名>.rules.toml 生成場景地圖")
     p.add_argument("--force", action="store_true", help="地圖被直接改過也照規則蓋掉")
     return parser
@@ -86,12 +116,21 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], ActionResult]] = {
         a.path, a.level, cells=a.cells, value=a.value, layer=a.layer
     ),
     "place_entity": lambda a: actions.place_entity(
-        a.path, a.level, a.entity, x=a.x, y=a.y, layer=a.layer
+        a.path, a.level, a.entity, x=a.x, y=a.y, layer=a.layer, values=dict(a.field) or None
     ),
     "move_entity": lambda a: actions.move_entity(a.path, a.iid, x=a.x, y=a.y),
     "delete_entity": lambda a: actions.delete_entity(a.path, a.iid),
     "render_level": lambda a: actions.render_level(a.path, a.level, scale=a.scale),
     "generate_scene": lambda a: actions.generate_scene(a.path, force=a.force),
+    "add_entity_def": lambda a: actions.add_entity_def(
+        a.path,
+        a.identifier,
+        color=a.color,
+        width=a.width,
+        height=a.height,
+        field_types=dict(a.field),
+    ),
+    "set_entity_fields": lambda a: actions.set_entity_fields(a.path, a.iid, dict(a.fields)),
 }
 
 

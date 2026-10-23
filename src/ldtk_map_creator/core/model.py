@@ -42,6 +42,12 @@ FieldDef = TypedDict(
         "isArray": bool,
         "canBeNull": bool,
         "defaultOverride": object,
+        "min": float | None,
+        "max": float | None,
+        "allowedRefs": str,
+        "allowedRefsEntityUid": int | None,
+        "allowedRefTags": list[str],
+        "allowOutOfLevelRef": bool,
     },
 )
 

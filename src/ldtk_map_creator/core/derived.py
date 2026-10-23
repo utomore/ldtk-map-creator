@@ -46,10 +46,20 @@ def refresh_derived(project: Project, only: Level | None = None) -> None:
 
 
 def _used_uids(project: Project) -> list[int]:
-    defs = project["defs"]
-    used = [d["uid"] for d in defs["layers"]] + [d["uid"] for d in defs["entities"]]
-    used += [f["uid"] for d in defs["entities"] for f in d["fieldDefs"]]
-    used += [t["uid"] for t in defs["tilesets"]] + [lv["uid"] for lv in project["levels"]]
+    """所有用掉的 uid：defs 裡每一層的 `uid`（圖層、entity、欄位、enum、level 欄位、
+    auto-layer 規則……），加上每個 level 的。LDtk 的 uid 整個專案共用一個序號。"""
+    used = [lv["uid"] for lv in project["levels"]]
+    stack: list[object] = [project["defs"]]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            items = cast(dict[str, object], node)
+            uid = items.get("uid")
+            if isinstance(uid, int) and not isinstance(uid, bool):
+                used.append(uid)
+            stack.extend(items.values())
+        elif isinstance(node, list):
+            stack.extend(cast(list[object], node))
     return used
 
 
