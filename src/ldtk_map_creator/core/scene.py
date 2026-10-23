@@ -1,16 +1,14 @@
 """場景地圖：從範本建立、新增 level、讀寫檔（D-002、D-006）。"""
 
-import copy
 import json
 import os
 import random
 import re
 from dataclasses import dataclass
-from functools import cache
-from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
+from . import template
 from .derived import UNASSIGNED_UID, cell_count, refresh_derived
 from .errors import SceneError
 from .model import LayerInstance, Level, Project
@@ -48,33 +46,10 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-@cache
-def _template_cached() -> Project:
-    text = resources.files(__package__).joinpath("templates", "single.ldtk").read_text("utf-8")
-    return cast(Project, json.loads(text))
-
-
-def _template() -> Project:
-    """範本的一份新複本；快取的那份不准改。"""
-    return copy.deepcopy(_template_cached())
-
-
-def _template_layer(layer_type: str) -> LayerInstance:
-    """新圖層的底。
-
-    LDtk 各型別的圖層實例欄位相同；範本沒有的型別借用 Entities 的，內容在呼叫端清空。
-    """
-    layers = {lv["__type"]: lv for lv in _template_cached()["levels"][0]["layerInstances"] or []}
-    base = layers.get(layer_type) or layers.get("Entities")
-    if base is None:
-        raise SceneError(f"範本沒有 {layer_type} 型別的圖層可以複製")
-    return copy.deepcopy(base)
-
-
 def _empty_layers(project: Project, level: Level, rng: random.Random) -> list[LayerInstance]:
     layers: list[LayerInstance] = []
     for ldef in project["defs"]["layers"]:
-        layer = _template_layer(ldef["type"])
+        layer = template.layer(ldef["type"])
         layer["iid"] = ""
         layer["layerDefUid"] = ldef["uid"]
         layer["seed"] = rng.randrange(10**6)
@@ -97,7 +72,7 @@ def new_scene(path: Path, *, split: bool = True) -> SceneMap:
         raise SceneError(f"場景地圖的主檔要是 .ldtk：{path}")
     if path.exists():
         raise SceneError(f"已經有這個檔，不覆蓋：{path}")
-    project = _template()
+    project = template.project()
     project["iid"] = ""
     project["dummyWorldIid"] = ""
     project["externalLevels"] = split
@@ -130,7 +105,7 @@ def add_level(
     if width_cells < 1 or height_cells < 1:
         raise SceneError(f"level 尺寸至少 1 格：{width_cells}x{height_cells}")
     grid = project["defaultGridSize"]
-    level = copy.deepcopy(_template_cached()["levels"][0])
+    level = template.level()
     level["identifier"] = identifier
     level["useAutoIdentifier"] = False
     level["iid"] = ""

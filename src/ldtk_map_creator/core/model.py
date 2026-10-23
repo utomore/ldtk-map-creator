@@ -23,6 +23,10 @@ class LayerDef(TypedDict):
     pxOffsetY: int
     intGridValues: list[IntGridValueDef]
     tilesetDefUid: int | None
+    requiredTags: list[str]
+    excludedTags: list[str]
+    autoRuleGroups: list[object]
+    autoSourceLayerDefUid: int | None
 
 
 class EntityDef(TypedDict):
@@ -34,6 +38,12 @@ class EntityDef(TypedDict):
     pivotX: float
     pivotY: float
     tags: list[str]
+    fieldDefs: list[object]
+    tileRect: object
+    maxCount: int
+    limitScope: str
+    limitBehavior: str
+    exportToToc: bool
 
 
 class TilesetDef(TypedDict):
@@ -64,6 +74,7 @@ EntityInstance = TypedDict(
         "height": int,
         "defUid": int,
         "px": list[int],
+        "fieldInstances": list[object],
     },
 )
 
