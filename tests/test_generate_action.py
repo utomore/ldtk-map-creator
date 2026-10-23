@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 from PIL import Image
 
 from ldtk_map_creator.core import actions, record
+from ldtk_map_creator.core import render as rendering
 from ldtk_map_creator.core.edit import read_cell
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.render import (
@@ -509,3 +510,29 @@ def test_example_overview_returned_only_when_world_changes(tmp_path: Path) -> No
         assert image.tobytes() == render_world(load_scene(path)).tobytes()
     added = actions.add_level(path, "Cellar", width_cells=2, height_cells=2, world_x=2048)
     assert any(p.stem == "world-overview" for p in added.previews)
+
+
+def test_example_overview_follows_removed_level(tmp_path: Path) -> None:
+    """多加的 level 在重新生成時拿掉：剩下的 level 沒變，總覽也要重畫，不留那個 level。"""
+    path = _two_levels(tmp_path)
+    actions.add_level(path, "Extra", width_cells=2, height_cells=2, world_x=4096)
+    actions.generate_scene(path, force=True)
+    with Image.open(world_preview_path(load_scene(path))) as image:
+        assert image.tobytes() == render_world(load_scene(path)).tobytes()
+
+
+def test_example_broken_overview_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """世界總覽畫不出來：編輯照做，舊的總覽刪掉（不留過期的圖），摘要說一聲。"""
+    path = _two_levels(tmp_path)
+    overview = world_preview_path(load_scene(path))
+    assert overview.is_file()
+
+    def broken(scene: object) -> object:
+        raise SceneError("故意壞掉")
+
+    monkeypatch.setattr(rendering, "render_world", broken)
+    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    assert "世界總覽畫不出來" in result.summary
+    assert not overview.exists()
