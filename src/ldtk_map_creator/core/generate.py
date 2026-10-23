@@ -71,10 +71,13 @@ def generate_scene(
         level = placed.level_of[element]
         paint_cells(scene, level, cells=sorted(cells), value=value[kind_of[element]])
     entities_def = next(d["uid"] for d in project["defs"]["layers"] if d["type"] == "Entities")
+    entity_layers = {
+        name: next(ly for ly in lv["layerInstances"] or [] if ly["layerDefUid"] == entities_def)
+        for name, lv in levels.items()
+    }
     for entity in rules.entities:
         level = levels[placed.level_of[entity.name]]
-        layers = level["layerInstances"] or []
-        entity_layer = next(ly for ly in layers if ly["layerDefUid"] == entities_def)
+        entity_layer = entity_layers[level["identifier"]]
         x, y = placed.entities[entity.name]
         before = len(entity_layer["entityInstances"])
         try:

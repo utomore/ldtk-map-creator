@@ -397,3 +397,58 @@ def test_example_broken_record_says_so(tmp_path: Path) -> None:
     record.record_path(path).write_text("{", encoding="utf-8")
     result = actions.render_level(path, "Village")
     assert "生成紀錄讀不了" in result.summary
+
+
+def _two_levels(tmp_path: Path) -> Path:
+    path = tmp_path / "village.ldtk"
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    record.rules_path(path).write_text(text[: text.index("[[portal]]")], encoding="utf-8")
+    actions.generate_scene(path)
+    return path
+
+
+def test_example_old_record_version_is_still_read(tmp_path: Path) -> None:
+    """2 版的生成紀錄照樣讀得懂：不必帶 force，摘要說這次不比位置；直接改過照樣擋。"""
+    path = _generated(tmp_path)
+    saved = record.read_record(path)
+    assert saved is not None
+    old = dict(saved, version=2)
+    old["labels"] = {"level": "Village", "names": saved["labels"]["Village"]}
+    defs = old["content"]["defs"]
+    defs["entities"] = [[n, w, h, len(fs)] for n, w, h, _, fs in defs["entities"]]
+    record.record_path(path).write_bytes(record.dump(old))
+    assert record.labels(record.read_record(path), "Village")
+    result = actions.generate_scene(path)
+    assert "舊格式" in result.summary
+    record.record_path(path).write_bytes(record.dump(old))
+    actions.paint_cells(path, "Village", cells=[(0, 0)], value=2)
+    with pytest.raises(SceneError, match="被直接改過"):
+        actions.generate_scene(path)
+
+
+def test_example_entity_def_color_edit_is_an_edit(tmp_path: Path) -> None:
+    """在 LDtk 改了規則宣告的 entity 類型的顏色：算直接改過，不默默蓋掉。"""
+    path = _two_levels(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    portal = next(d for d in data["defs"]["entities"] if d["identifier"] == "Portal")
+    portal["color"] = "#FF0000"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SceneError, match="entity 定義改了"):
+        actions.generate_scene(path)
+
+
+def test_example_summary_and_previews_cover_every_level(tmp_path: Path) -> None:
+    """多個 level：重新生成回傳每個 level 的預覽圖；新加的 level 在摘要裡另起一行。"""
+    path = tmp_path / "village.ldtk"
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    actions.generate_scene(path)
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    record.rules_path(path).write_text(
+        text[: text.index("[[portal]]")].replace('name = "Village"', 'name = "Village"', 1),
+        encoding="utf-8",
+    )
+    result = actions.generate_scene(path, force=True)
+    assert "level 新的：House1" in result.summary
+    again = actions.generate_scene(path)
+    assert {p.stem for p in again.previews} == {"Village", "House1"}
+    assert "沒有元素移動" in again.summary

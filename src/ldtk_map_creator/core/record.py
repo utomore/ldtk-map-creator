@@ -20,6 +20,7 @@ from .layout import Layout
 from .scene import SceneMap
 
 VERSION = 3  # 2：加上預覽圖要寫的元素名稱；3：名稱照 level 分開、記下 level 的位置
+READABLE = (2, VERSION)  # 讀得懂的版本；2 版照舊比對，下次生成就寫成新版
 _DEF_NAMES = {"layers": "圖層", "entities": "entity ", "tilesets": "tileset "}
 _EXAMPLES = 3  # 每一層最多列幾格不同的例子
 
@@ -63,7 +64,13 @@ def _content(target: SceneMap, refreshed: bool) -> Content:
             for d in project["defs"]["layers"]
         ],
         "entities": [
-            [d["identifier"], d["width"], d["height"], len(d["fieldDefs"])]
+            [
+                d["identifier"],
+                d["width"],
+                d["height"],
+                str(d["color"]).upper(),
+                [[f["identifier"], f["__type"]] for f in d["fieldDefs"]],
+            ]
             for d in project["defs"]["entities"]
         ],
         "tilesets": [[d.get("identifier"), d.get("relPath")] for d in raw.get("tilesets", [])],
@@ -166,8 +173,11 @@ def labels(saved: dict[str, Any] | None, level: str) -> list[tuple[str, float, f
     found = saved.get("labels") if saved else None
     if not isinstance(found, dict):
         return []
+    table = cast(dict[str, Any], found)
+    if saved and saved.get("version") == 2:  # 2 版：{"level": 名稱, "names": [...]}
+        table = {table.get("level"): table.get("names", [])}
     try:
-        listed = cast(dict[str, Any], found).get(level, [])
+        listed = table.get(level, [])
         names = [(str(n), float(x), float(y)) for n, x, y in listed]
     except (KeyError, TypeError, ValueError):
         return []
@@ -191,7 +201,7 @@ def read_record(scene_path: Path) -> dict[str, Any] | None:
     record = cast(dict[str, Any], data) if isinstance(data, dict) else {}
     body = record.get("content")
     if (
-        record.get("version") != VERSION
+        record.get("version") not in READABLE
         or not isinstance(record.get("elements"), dict)
         or not isinstance(body, dict)
         or set(cast(dict[str, Any], body)) != {"defs", "levels"}
@@ -278,11 +288,28 @@ def _level_differences(old: Content, new: Content) -> list[str]:
     return lines
 
 
+def comparable(saved: dict[str, Any], current: Content) -> Content:
+    """把現在的內容換成紀錄那一版的形狀，舊版的紀錄才比得了。
+
+    2 版的 entity 定義只記名稱、大小與欄位數。
+    """
+    if saved.get("version") != 2:
+        return current
+    shaped = copy.deepcopy(current)
+    shaped["defs"]["entities"] = [
+        [n, w, h, len(fs)] for n, w, h, _, fs in current["defs"]["entities"]
+    ]
+    return shaped
+
+
 def moved(
     old: dict[str, Any] | None, new: dict[str, Any]
 ) -> tuple[list[str], list[str], list[str]]:
-    """跟上次生成比：（位置變了的、新的、不見的）元素名稱。"""
-    before: dict[str, str] = old["elements"] if old else {}
+    """跟上次生成比：（位置變了的、新的、不見的）元素名稱；level 寫成 `level <名稱>`。
+
+    舊版紀錄的位置寫法不同，不比（當成沒有上次）。
+    """
+    before: dict[str, str] = old["elements"] if old and old.get("version") == VERSION else {}
     after: dict[str, str] = new["elements"]
     changed = sorted(n for n in before.keys() & after.keys() if before[n] != after[n])
     return changed, sorted(after.keys() - before.keys()), sorted(before.keys() - after.keys())

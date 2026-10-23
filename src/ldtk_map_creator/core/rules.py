@@ -239,15 +239,16 @@ def _check_levels(rules: Rules) -> None:
                 raise SceneError(f"level.{level.name}.near：沒有叫 {level.near} 的 level")
             edges[level.name].append((level.near, "near"))
     _no_cycles(edges, lambda name, field, loop: f"level.{name}.{field}：level 互相靠近成環：{loop}")
+
     # 都用 at 固定位置的 level，現在就看得出重疊（靠近別人的要排了才知道，交給配置器）
+    def world_rect(level: LevelRule) -> tuple[int, int, int, int]:
+        x, y = level.at or (0, 0)
+        return x, y, level.size[0], level.size[1]
+
     fixed = [lv for lv in rules.levels if lv.near is None]
     for i, level in enumerate(fixed):
-        x, y = level.at or (0, 0)
-        w, h = level.size
         for other in fixed[:i]:
-            ox, oy = other.at or (0, 0)
-            ow, oh = other.size
-            if x < ox + ow and ox < x + w and y < oy + oh and oy < y + h:
+            if rects_overlap(world_rect(level), world_rect(other)):
                 raise SceneError(f"level.{level.name}.at：跟 level {other.name} 重疊")
 
 
@@ -466,6 +467,11 @@ def _check_links(rules: Rules) -> None:
         if portal.start == portal.to or _same_cell(rules, portal.start, portal.to):
             raise SceneError(f"{portal.name}.to：兩端是同一格（{portal.start}、{portal.to}）")
     _check_cycles(rules)
+
+
+def rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    """兩個矩形（x, y, 寬, 高）有沒有重疊；只碰到邊不算。"""
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
 def _same_cell(rules: Rules, a: str, b: str) -> bool:

@@ -25,6 +25,7 @@ from .rules import (
     Rules,
     Side,
     area_anchor_offset,
+    rects_overlap,
     references,
 )
 
@@ -37,7 +38,7 @@ _SIDE_NAMES: dict[str, str] = {"north": "北", "east": "東", "south": "南", "w
 class Layout:
     """配置結果；元素的格都是它所在 level 的格座標。"""
 
-    # 區域與路徑佔的格，照排列順序
+    # 區域與路徑佔的格：一個 level 一個 level，同一個 level 裡照排列順序
     cells: dict[str, frozenset[Cell]]
     # 錨點，例如 `main_road.end`
     anchors: dict[str, Cell]
@@ -80,12 +81,12 @@ def layout(rules: Rules) -> Layout:
     entities: dict[str, Cell] = {}
     pushed_by: dict[str, frozenset[str]] = {}
     level_of: dict[str, str] = {}
-    order = placement_order(rules)
+    by_level: dict[str, list[Placeable]] = {lv.name: [] for lv in rules.levels}
+    for element in placement_order(rules):
+        by_level[rules.level_of(element).name].append(element)
     for level in rules.levels:
         grid = _Grid(*level.size)
-        for element in order:
-            if rules.level_of(element).name != level.name:
-                continue
+        for element in by_level[level.name]:
             rng = random.Random(f"{rules.seed}:{element.name}")
             if isinstance(element, AreaRule):
                 rect, pushed = _place_area(element, grid, rng)
@@ -131,7 +132,7 @@ def place_levels(rules: Rules) -> dict[str, Rect]:
         if level.near is None:
             x, y = level.at or (0, 0)
             rect = (x, y, *level.size)
-            hit = [n for n, r in placed.items() if _rects_overlap(rect, r)]
+            hit = [n for n, r in placed.items() if rects_overlap(rect, r)]
             if hit:
                 raise SceneError(f"level.{level.name}.at：跟 level {hit[0]} 重疊")
             placed[level.name] = rect
@@ -167,14 +168,10 @@ def _place_level_near(rules: Rules, level: LevelRule, placed: dict[str, Rect]) -
             spots.sort(key=lambda s: (abs(s[1] - middle), s[1]))
         for sx, sy in spots:
             rect = (sx, sy, w, h)
-            if not any(_rects_overlap(rect, r) for r in placed.values()):
+            if not any(rects_overlap(rect, r) for r in placed.values()):
                 return rect
     where = f"{level.near} 的{_SIDE_NAMES[level.side]}邊" if level.side else f"{level.near} 旁邊"
     raise SceneError(f"level.{level.name}.near：在 level {where}排不下 {w}x{h}（gap {gap}）")
-
-
-def _rects_overlap(a: Rect, b: Rect) -> bool:
-    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
 class _Grid:

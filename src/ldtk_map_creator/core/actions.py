@@ -93,7 +93,7 @@ def _commit(
     target: SceneMap,
     before: dict[str, object] | None,
     summary: str,
-    primary: str,
+    primary: str | list[str],
     iid: str | None = None,
     extra: dict[Path, bytes] | None = None,
     remove: set[Path] | None = None,
@@ -102,7 +102,7 @@ def _commit(
     """寫回有變的 level 與它們的預覽圖；失敗時還原磁碟上動過的檔。
 
     - `before` 是操作前每個 level（以 iid 為鍵）的複本；None 表示全部都是新的。
-    - `primary` 是這次操作的目標 level：就算內容沒變，也一定回傳它的預覽圖。
+    - `primary` 是這次操作的目標 level（可以好幾個）：就算內容沒變，也一定回傳它的預覽圖。
     - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）；`remove` 是要一起刪的檔。
     - `generated` 是預覽圖要用的生成紀錄（寫上元素名稱）；None 就讀磁碟上的。
     """
@@ -116,7 +116,7 @@ def _commit(
         for lv in levels
         if before is None
         or _for_render(before.get(lv["iid"])) != _for_render(lv)
-        or lv["identifier"] == primary
+        or lv["identifier"] in (primary if isinstance(primary, list) else [primary])
     ]
     labels_by_level, note = _names(target, redraw, generated, refreshed=True)
     summary += note
@@ -414,7 +414,8 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                     f"{path} 沒有上次生成的紀錄，不知道有沒有被直接改過，不覆蓋；"
                     "確定要照規則蓋掉就帶 force"
                 )
-            diff = record.differences(previous["content"], _content(current))
+            now = record.comparable(previous, _content(current))
+            diff = record.differences(previous["content"], now)
             if diff:
                 listed = "\n".join(f"- {line}" for line in diff)
                 raise SceneError(
@@ -431,9 +432,9 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     kept = {lv["identifier"].lower() for lv in target.project["levels"]}
     gone = [lv["identifier"] for lv in current.project["levels"]] if current else []
     remove = {rendering.preview_path(target, lv) for lv in gone if lv.lower() not in kept}
-    return _commit(
-        target, before, summary, rules.level_name, extra=extra, remove=remove, generated=new_record
-    )
+    # 規則涵蓋每個 level：就算沒變，每個 level 的預覽圖都回傳
+    every = [lv.name for lv in rules.levels]
+    return _commit(target, before, summary, every, extra=extra, remove=remove, generated=new_record)
 
 
 def _names(
@@ -510,18 +511,28 @@ def _load_current(path: Path, force: bool) -> SceneMap | None:
 
 
 def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[str, Any]) -> str:
-    changed, added, removed = record.moved(previous, new)
-    count = len(new["elements"]) - len(rules.levels)
+    def split(names: list[str]) -> tuple[list[str], list[str]]:
+        levels = [n.removeprefix("level ") for n in names if n.startswith("level ")]
+        return [n for n in names if not n.startswith("level ")], levels
+
+    changed, added, removed = (split(names) for names in record.moved(previous, new))
+    count = len([n for n in new["elements"] if not n.startswith("level ")])
     levels = "、".join(f"{lv.name}（{lv.size[0]}x{lv.size[1]} 格）" for lv in rules.levels)
     lines = [f"照規則生成 {levels}，{count} 個元素"]
     if previous is None:
         return lines[0]
-    if changed:
-        lines.append(f"位置變了：{'、'.join(changed)}")
-    if added:
-        lines.append(f"新的：{'、'.join(added)}")
-    if removed:
-        lines.append(f"拿掉了：{'、'.join(removed)}")
+    if previous.get("version") != record.VERSION:
+        lines.append("上次的生成紀錄是舊格式，這次不比位置；下次就會列出誰移動了")
+        return "\n".join(lines)
+    for label, (elements, moved_levels) in (
+        ("位置變了", changed),
+        ("新的", added),
+        ("拿掉了", removed),
+    ):
+        if moved_levels:
+            lines.append(f"level {label}：{'、'.join(moved_levels)}")
+        if elements:
+            lines.append(f"{label}：{'、'.join(elements)}")
     if len(lines) == 1:
         lines.append("沒有元素移動")
     return "\n".join(lines)
