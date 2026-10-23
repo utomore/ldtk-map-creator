@@ -5,7 +5,7 @@ description = "讓我和 AI agent 透過對話，從規則生成並微調 LDtk �
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "mcp",
+    "mcp>=2,<3",
     "pillow",
 ]
 
