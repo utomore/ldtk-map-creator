@@ -1,4 +1,4 @@
-"""RENDER-1～RENDER-4：預覽圖。"""
+"""RENDER-1～RENDER-5：預覽圖。"""
 
 import copy
 import dataclasses
@@ -12,11 +12,18 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from PIL import Image, ImageChops
 
+from ldtk_map_creator.core import record
 from ldtk_map_creator.core.edit import paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import generate_scene
 from ldtk_map_creator.core.record import name_positions
-from ldtk_map_creator.core.render import MARGIN, image_size, render_level, write_preview
+from ldtk_map_creator.core.render import (
+    MARGIN,
+    image_size,
+    name_boxes,
+    render_level,
+    write_preview,
+)
 from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 from tests.rule_strategies import placeable_village_rules
@@ -229,13 +236,23 @@ def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
     r = dataclasses.replace(r, entities=())
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
-    names = name_positions(placed)
+    names = name_positions(placed, {a.name for a in r.areas})
     assume(names)
     for name, x, y in names:  # 每個名稱都寫在自己的格上
         assert (int(x), int(y)) in placed.cells[name], name
     level = scene.level(r.level_name)
+    inner_right = MARGIN + level["pxWid"] * scale
+    inner_bottom = MARGIN + level["pxHei"] * scale
+    # 全部一起寫：都在 level 裡、彼此不重疊
+    boxes = [b for _, _, _, b in name_boxes(scene, r.level_name, names, scale=scale)]
+    for i, a in enumerate(boxes):
+        assert a[0] >= MARGIN and a[1] >= MARGIN and a[2] <= inner_right and a[3] <= inner_bottom
+        for b in boxes[i + 1 :]:
+            assert not (a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]), (a, b)
     plain = render_level(scene, r.level_name, scale=scale)
     one = [names[pick % len(names)]]
+    placed_one = name_boxes(scene, r.level_name, one, scale=scale)
+    assume(placed_one)  # 單獨一個名稱也可能比 level 大，縮到最小還放不下就不寫
     labelled = render_level(scene, r.level_name, scale=scale, labels=one)
     assert (
         labelled.tobytes() == render_level(scene, r.level_name, scale=scale, labels=one).tobytes()
@@ -243,8 +260,10 @@ def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
     box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
     assert box is not None
     left, top, right, bottom = box  # right、bottom 不含
-    inner_right = MARGIN + level["pxWid"] * scale
-    inner_bottom = MARGIN + level["pxHei"] * scale
+    # 畫出來的字落在 name_boxes 說的範圍裡
+    expected_box = placed_one[0][3]
+    assert left >= expected_box[0] - 1 and top >= expected_box[1] - 1
+    assert right <= expected_box[2] + 1 and bottom <= expected_box[3] + 1
     assert left >= MARGIN and top >= MARGIN and right <= inner_right and bottom <= inner_bottom
     # 放得下時以標示位置為中心（往內推過的就對齊推到的那一邊）
     _, x, y = one[0]
@@ -285,7 +304,7 @@ def test_example_long_name_at_the_corner_stays_inside() -> None:
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
-    names = name_positions(placed)
+    names = name_positions(placed, {a.name for a in r.areas})
     level = scene.level("L")
     for label in names:  # 左上角、右下角各一個；倍率 1 時字比格子高，上下也要往內推
         plain = render_level(scene, "L", scale=1)
@@ -314,51 +333,83 @@ def test_example_name_does_not_cover_an_entity_on_it() -> None:
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
-    image = render_level(scene, "L", labels=name_positions(placed))
+    image = render_level(scene, "L", labels=name_positions(placed, {a.name for a in r.areas}))
     x, y = placed.entities["spawn"]
     center = (MARGIN + x * 32 + 16, MARGIN + y * 32 + 16)
     assert image.getpixel(center) == _hex(scene.project["defs"]["entities"][0]["color"])
 
 
 def test_example_name_wider_than_the_level() -> None:
-    """名稱比整個 level 還寬：縮小字或不寫，都不跑出 level、不蓋到座標。"""
+    """名稱比 level 寬：縮小字寫得下就寫；縮到最小還放不下就不寫，不跑出 level。"""
     r = Rules(
         0,
         "L",
         (2, 1),
         (Kind("k", 1, "#000000"),),
-        (AreaRule("a_name_far_too_long_for_two_cells", "k", (1, 1), at=(0, 0)),),
+        (
+            AreaRule("medium", "k", (1, 1), at=(0, 0)),
+            AreaRule("a_name_far_too_long_for_two_cells", "k", (1, 1), at=(1, 0)),
+        ),
         (),
         (),
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
-    level = scene.level("L")
-    for scale in (1, 2):
-        plain = render_level(scene, "L", scale=scale)
-        labelled = render_level(scene, "L", scale=scale, labels=name_positions(placed))
-        box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
-        if box is not None:
-            assert box[0] >= MARGIN and box[1] >= MARGIN
-            assert box[2] <= MARGIN + level["pxWid"] * scale
-            assert box[3] <= MARGIN + level["pxHei"] * scale
-
-
-def test_example_medium_name_shrinks_to_fit() -> None:
-    """名稱比 level 寬一點：縮小字寫得下就寫，不是直接不寫。"""
-    r = Rules(
-        0,
-        "L",
-        (2, 1),
-        (Kind("k", 1, "#000000"),),
-        (AreaRule("medium", "k", (1, 1), at=(0, 0)),),
-        (),
-        (),
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    names = name_positions(placed, {a.name for a in r.areas})
+    drawn = [n for n, _, _, _ in name_boxes(scene, "L", names, scale=1)]
+    assert drawn == ["medium"]
     plain = render_level(scene, "L", scale=1)
-    labelled = render_level(scene, "L", scale=1, labels=name_positions(placed))
+    labelled = render_level(scene, "L", scale=1, labels=names)
     box = ImageChops.difference(plain.convert("RGB"), labelled.convert("RGB")).getbbox()
     assert box is not None
     assert box[0] >= MARGIN and box[2] <= MARGIN + 32
+
+
+def test_example_neighbour_names_do_not_overlap() -> None:
+    """兩個相鄰的小區域、名稱都比區域寬：後擺的縮小字或不寫，不疊在先擺的上面。"""
+    r = Rules(
+        0,
+        "L",
+        (6, 3),
+        (Kind("k", 1, "#000000"),),
+        (
+            AreaRule("north_gate", "k", (1, 1), at=(2, 1)),
+            AreaRule("north_road", "k", (1, 1), at=(3, 1)),
+        ),
+        (),
+        (),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
+    boxes = name_boxes(scene, "L", name_positions(placed, {a.name for a in r.areas}))
+    assert boxes[0][0] == "north_gate"
+    if len(boxes) == 2:
+        a, b = boxes[0][3], boxes[1][3]
+        assert not (a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3])
+
+
+def test_example_axis_numbers_stay_on_top(tmp_path: Path) -> None:
+    """entity 跑進上方的邊框時，格子座標照樣看得見（座標最後畫）。"""
+    scene = _build(tmp_path, 4, 4, [], [])
+    plain = render_level(scene, "Room")
+    place_entity(scene, "Room", "Spawn", x=0, y=0)
+    layers = scene.level("Room")["layerInstances"] or []
+    entity = next(e for ly in layers for e in ly["entityInstances"])
+    entity["px"] = [0, -10]  # 方塊往上跑進座標那一條
+    covered = render_level(scene, "Room")
+    text = (230, 230, 230, 255)
+    for x in range(MARGIN, MARGIN + 32):
+        for y in range(MARGIN):
+            if plain.getpixel((x, y)) == text:
+                assert covered.getpixel((x, y)) == text, (x, y)
+
+
+def test_example_record_with_nan_position_is_skipped() -> None:
+    """生成紀錄裡的位置是 NaN 或 Infinity（JSON 讀得進來）時略過，不讓 render 當掉。"""
+    saved = {
+        "labels": {
+            "level": "L",
+            "names": [["a", float("nan"), 1], ["b", 1, float("inf")], ["c", 1, 1]],
+        }
+    }
+    assert record.labels(saved, "L") == [("c", 1.0, 1.0)]

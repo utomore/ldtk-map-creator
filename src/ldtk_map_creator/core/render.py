@@ -4,15 +4,16 @@
 - 背景是 level 的背景色。
 - 看得見的 IntGrid 從最下層畫到最上層，每個值用定義的顏色與圖層透明度；0 不畫。
 - entity 畫成定義顏色的方塊（用 entity 自己的尺寸），名稱寫在方塊上方；貼著上緣時寫在下方。
-- 格線畫在 IntGrid 上面，加上方與左邊的格子座標，方便在對話裡指定位置。
+- 格線畫在 IntGrid 上面；上方與左邊的格子座標最後畫，方便在對話裡指定位置。
 - 都加上圖層的像素偏移，跟 LDtk 顯示的位置一致。
 - 給了元素名稱時（從規則生成的 level），名稱寫在元素的位置上，加深色描邊，畫在格線上、
-  entity 下：不被格線或顏色蓋掉，也不蓋住 entity；名稱整個留在 level 範圍內。
+  entity 下：不被格線或顏色蓋掉，也不蓋住 entity；名稱整個留在 level 範圍內、彼此不重疊。
 
 render 只讀不改：不呼叫 refresh_derived，所有值從定義與本體欄位算。
 """
 
 import io
+import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -108,8 +109,8 @@ def render_level(
             _draw_intgrid(draw, level, layer, ldef, scale)
     # 格線與元素名稱畫在 IntGrid 上、entity 下：名稱不被格線蓋掉，也不蓋住 entity
     origin = _label_grid(project, level, layer_defs, scale)
-    _draw_grid(draw, level, origin, scale)
-    _draw_names(draw, level, origin, labels, scale)
+    _draw_grid(draw, level, origin, scale, numbers=False)
+    _draw_names(draw, _place_names(level, origin, labels, scale), scale)
     boxes: list[tuple[EntityDef, tuple[int, int, int, int]]] = []
     for layer in reversed(visible):
         ldef = layer_defs[layer["layerDefUid"]]
@@ -132,57 +133,80 @@ def render_level(
     for name, (xy, anchor, inside) in entity_labels:
         if inside:
             draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
+    # 格子座標最後畫，entity 跑進邊框也蓋不到
+    _draw_grid(draw, level, origin, scale, lines=False)
     return image
 
 
-def _draw_names(
-    draw: ImageDraw.ImageDraw,
-    level: Level,
-    origin: tuple[int, int, int],
-    labels: Sequence[Label],
-    scale: int,
-) -> None:
-    """元素名稱寫在格座標 (x, y) 上：淺色字加深色描邊，整個留在 level 裡。
-
-    靠邊放不下就往內推；比 level 還寬或還高就縮小字，縮到最小還放不下就不寫。
-    """
-    grid, origin_x, origin_y = origin
-    stroke = _name_stroke(scale)
-    right = MARGIN + level["pxWid"] * scale - 1
-    bottom = MARGIN + level["pxHei"] * scale - 1
-    for name, x, y in labels:
-        fitted = _fit(draw, name, stroke, right - MARGIN + 1, bottom - MARGIN + 1, scale)
-        if fitted is None:
-            continue
-        font, (left, top, end, low) = fitted
-        cx = origin_x + x * grid * scale
-        cy = origin_y + y * grid * scale
-        cx = min(max(cx, MARGIN - left), right - end)
-        cy = min(max(cy, MARGIN - top), bottom - low)
-        draw.text(
-            (round(cx), round(cy)),
-            name,
-            fill=_LABEL,
-            font=font,
-            anchor="mm",
-            stroke_width=stroke,
-            stroke_fill=_FRAME,
-        )
-
+NameBox = tuple[str, int, tuple[int, int], tuple[int, int, int, int]]
+"""一個要寫的元素名稱：（名稱, 字級, 中心點, 外框）；外框是像素 (左, 上, 右, 下)，右下不含。"""
 
 _SMALLEST_NAME = 6
 
 
-def _fit(
-    draw: ImageDraw.ImageDraw, name: str, stroke: int, width: int, height: int, scale: int
-) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, tuple[float, float, float, float]] | None:
-    """從正常字級往下找放得進 width x height 的字；都放不下回傳 None。"""
-    for size in range(_name_size(scale), _SMALLEST_NAME - 1, -1):
+def name_boxes(
+    scene: SceneMap, level_id: str, labels: Sequence[Label], *, scale: int = 2
+) -> list[NameBox]:
+    """元素名稱實際寫在哪裡、多大；render 照這份畫。放不下的名稱不在裡面。"""
+    project = scene.project
+    level = scene.level(level_id)
+    layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
+    return _place_names(level, _label_grid(project, level, layer_defs, scale), labels, scale)
+
+
+def _place_names(
+    level: Level, origin: tuple[int, int, int], labels: Sequence[Label], scale: int
+) -> list[NameBox]:
+    """以標示位置為中心擺名稱，整個留在 level 裡、彼此不重疊。
+
+    靠邊放不下就往內推；比 level 還寬、還高或會撞到先擺的名稱，就縮小字；
+    縮到最小還放不下就不寫。照 labels 的順序擺，先到先得。
+    """
+    grid, origin_x, origin_y = origin
+    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    stroke = _name_stroke(scale)
+    right = MARGIN + level["pxWid"] * scale  # 不含
+    bottom = MARGIN + level["pxHei"] * scale
+    placed: list[NameBox] = []
+    for name, x, y in labels:
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        for size in range(_name_size(scale), _SMALLEST_NAME - 1, -1):
+            font = _font(size)
+            left, top, end, low = measure.textbbox(
+                (0, 0), name, font=font, anchor="mm", stroke_width=stroke
+            )
+            if end - left > right - MARGIN or low - top > bottom - MARGIN:
+                continue
+            cx = origin_x + x * grid * scale
+            cy = origin_y + y * grid * scale
+            cx = round(min(max(cx, MARGIN - left), right - end))
+            cy = round(min(max(cy, MARGIN - top), bottom - low))
+            box = (
+                max(MARGIN, math.floor(cx + left)),
+                max(MARGIN, math.floor(cy + top)),
+                min(right, math.ceil(cx + end)),
+                min(bottom, math.ceil(cy + low)),
+            )
+            if any(_overlap(box, other[3]) for other in placed):
+                continue
+            placed.append((name, size, (cx, cy), box))
+            break
+    return placed
+
+
+def _overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _draw_names(draw: ImageDraw.ImageDraw, boxes: list[NameBox], scale: int) -> None:
+    """淺色字加深色描邊。"""
+    stroke = _name_stroke(scale)
+    for name, size, xy, _ in boxes:
         font = _font(size)
-        box = draw.textbbox((0, 0), name, font=font, anchor="mm", stroke_width=stroke)
-        if box[2] - box[0] <= width and box[3] - box[1] <= height:
-            return font, box
-    return None
+        draw.text(
+            xy, name, fill=_LABEL, font=font, anchor="mm", stroke_width=stroke, stroke_fill=_FRAME
+        )
 
 
 def _name_size(scale: int) -> int:
@@ -256,8 +280,15 @@ def _label_place(
 
 
 def _draw_grid(
-    draw: ImageDraw.ImageDraw, level: Level, origin: tuple[int, int, int], scale: int
+    draw: ImageDraw.ImageDraw,
+    level: Level,
+    origin: tuple[int, int, int],
+    scale: int,
+    *,
+    lines: bool = True,
+    numbers: bool = True,
 ) -> None:
+    """格線（`lines`）與上方、左邊的格子座標（`numbers`）。"""
     grid, origin_x, origin_y = origin
     cols = cell_count(level["pxWid"], grid)
     rows = cell_count(level["pxHei"], grid)
@@ -267,15 +298,17 @@ def _draw_grid(
     font = _font(12)
     for cx in range(cols + 1):
         x = min(origin_x + cx * cell, right)
-        draw.line((x, MARGIN, x, bottom), fill=_GRID_LINE)
-        if cx < cols:
+        if lines:
+            draw.line((x, MARGIN, x, bottom), fill=_GRID_LINE)
+        if numbers and cx < cols:
             # 最後一欄可能不滿一格，標籤放在看得見的那一段中間
             middle = x + (min(x + cell, right + 1) - x) / 2
             draw.text((middle, MARGIN / 2), str(cx), fill=_LABEL, font=font, anchor="mm")
     for cy in range(rows + 1):
         y = min(origin_y + cy * cell, bottom)
-        draw.line((MARGIN, y, right, y), fill=_GRID_LINE)
-        if cy < rows:
+        if lines:
+            draw.line((MARGIN, y, right, y), fill=_GRID_LINE)
+        if numbers and cy < rows:
             middle = y + (min(y + cell, bottom + 1) - y) / 2
             draw.text((MARGIN / 2, middle), str(cy), fill=_LABEL, font=font, anchor="mm")
 

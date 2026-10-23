@@ -116,10 +116,10 @@ def _commit(
         or _for_render(before.get(lv["iid"])) != _for_render(lv)
         or lv["identifier"] == primary
     ]
-    names, note = _names(target, redraw, generated)
+    labels_by_level, note = _names(target, redraw, generated, refreshed=True)
     summary += note
     images = {
-        level_id: rendering.render_level(target, level_id, labels=names.get(level_id, []))
+        level_id: rendering.render_level(target, level_id, labels=labels_by_level.get(level_id, []))
         for level_id in redraw
     }
     folder = target.path.parent / target.path.stem
@@ -341,7 +341,8 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                 )
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
-    new_record = record.make_record(target, placed, rules.level_name)
+    areas = {a.name for a in rules.areas}
+    new_record = record.make_record(target, placed, rules.level_name, areas)
     summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
     # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
@@ -354,7 +355,11 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
 
 
 def _names(
-    target: SceneMap, levels: list[str], generated: dict[str, Any] | None
+    target: SceneMap,
+    levels: list[str],
+    generated: dict[str, Any] | None,
+    *,
+    refreshed: bool = False,
 ) -> tuple[dict[str, list[rendering.Label]], str]:
     """預覽圖要寫的元素名稱，與要補在摘要後面的說明。
 
@@ -371,7 +376,7 @@ def _names(
         if generated is None or not any(record.labels(generated, lv) for lv in levels):
             return {}, ""
         try:
-            same = record.content(target) == generated["content"]
+            same = record.content(target, refreshed=refreshed) == generated["content"]
         except SceneError:
             same = False
         if not same:
