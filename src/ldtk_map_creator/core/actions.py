@@ -108,6 +108,7 @@ def _commit(
     """
     extra = extra or {}
     remove = remove or set()
+    targets = set(primary) if isinstance(primary, list) else {primary}
     refresh_derived(target.project)
     levels = target.project["levels"]
     changed = [lv["identifier"] for lv in levels if before is None or before.get(lv["iid"]) != lv]
@@ -116,7 +117,7 @@ def _commit(
         for lv in levels
         if before is None
         or _for_render(before.get(lv["iid"])) != _for_render(lv)
-        or lv["identifier"] in (primary if isinstance(primary, list) else [primary])
+        or lv["identifier"] in targets
     ]
     labels_by_level, note = _names(target, redraw, generated, refreshed=True)
     summary += note
@@ -459,7 +460,8 @@ def _names(
         if generated is None or not any(record.labels(generated, lv) for lv in levels):
             return {}, ""
         try:
-            same = record.content(target, refreshed=refreshed) == generated["content"]
+            now = record.comparable(generated, record.content(target, refreshed=refreshed))
+            same = now == generated["content"]
         except SceneError:
             same = False
         if not same:
@@ -511,12 +513,9 @@ def _load_current(path: Path, force: bool) -> SceneMap | None:
 
 
 def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[str, Any]) -> str:
-    def split(names: list[str]) -> tuple[list[str], list[str]]:
-        levels = [n.removeprefix("level ") for n in names if n.startswith("level ")]
-        return [n for n in names if not n.startswith("level ")], levels
-
-    changed, added, removed = (split(names) for names in record.moved(previous, new))
-    count = len([n for n in new["elements"] if not n.startswith("level ")])
+    elements = record.moved(previous, new)
+    moved_levels = record.moved(previous, new, "levels")
+    count = len(new["elements"])
     levels = "、".join(f"{lv.name}（{lv.size[0]}x{lv.size[1]} 格）" for lv in rules.levels)
     lines = [f"照規則生成 {levels}，{count} 個元素"]
     if previous is None:
@@ -524,15 +523,11 @@ def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[s
     if previous.get("version") != record.VERSION:
         lines.append("上次的生成紀錄是舊格式，這次不比位置；下次就會列出誰移動了")
         return "\n".join(lines)
-    for label, (elements, moved_levels) in (
-        ("位置變了", changed),
-        ("新的", added),
-        ("拿掉了", removed),
-    ):
-        if moved_levels:
-            lines.append(f"level {label}：{'、'.join(moved_levels)}")
-        if elements:
-            lines.append(f"{label}：{'、'.join(elements)}")
+    for i, label in enumerate(("位置變了", "新的", "拿掉了")):
+        if moved_levels[i]:
+            lines.append(f"level {label}：{'、'.join(moved_levels[i])}")
+        if elements[i]:
+            lines.append(f"{label}：{'、'.join(elements[i])}")
     if len(lines) == 1:
         lines.append("沒有元素移動")
     return "\n".join(lines)

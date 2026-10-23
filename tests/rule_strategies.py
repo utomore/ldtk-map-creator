@@ -514,8 +514,8 @@ def placeable_multi_village_rules(draw: st.DrawFn) -> Rules:
             layout(r)
         except SceneError as error:
             head = str(error).split("：", 1)[0]
-            if head.startswith("level."):
-                # 指定的那一邊被別的 level 佔滿：改成固定在遠處、彼此不重疊的格位
+            if head.startswith("level.") and head.endswith(".near"):
+                # 靠近的那一邊被別的 level 佔滿：改成固定在遠處、彼此不重疊的格位
                 stuck = head.split(".")[1]
                 index = [lv.name for lv in r.levels].index(stuck)
                 far = (1000 + 100 * index, 1000)

@@ -585,3 +585,19 @@ def test_example_other_levels_stay_when_one_changes() -> None:
     for name in ("plaza", "house_1"):
         assert before.cells[name] == after.cells[name]
     assert before.levels == after.levels
+
+
+def test_example_entity_type_errors_name_the_type(tmp_path: Path) -> None:
+    """直接組出來、沒經過規則檔檢查的 entity 類型寫錯：訊息開頭是 entity_types.<名稱>。"""
+    r = dataclasses.replace(load_rules(EXAMPLE), entity_types=(EntityType("Spawn"),))
+    with pytest.raises(SceneError, match=r"^entity_types\.Spawn："):
+        generate_scene(r, tmp_path / "scene.ldtk")
+
+
+def test_example_layout_refuses_anchor_in_other_level() -> None:
+    """直接組出來的規則把 entity 擺在別的 level 的錨點：配置器也擋，不拿別的 level 的座標。"""
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    stray = EntityRule("stray", "Spawn", "plaza.center", level="House1")
+    r = dataclasses.replace(r, portals=(), entities=(stray,))
+    with pytest.raises(SceneError, match=r"^stray\.at："):
+        layout(r)

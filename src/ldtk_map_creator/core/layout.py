@@ -108,6 +108,9 @@ def layout(rules: Rules) -> Layout:
         if isinstance(entity.at, tuple):
             cell = entity.at
         elif entity.at in anchors:
+            owner = level_of[entity.at.split(".", 1)[0]]
+            if owner != level:  # 讀規則檔時擋過；直接組出來的規則照樣報成 SceneError
+                raise SceneError(f"{entity.name}.at：{entity.at} 在 level {owner}，不在 {level}")
             cell = anchors[entity.at]
         else:
             raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")

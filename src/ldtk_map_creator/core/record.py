@@ -134,9 +134,7 @@ def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, 
         elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
         elements[name] = _digest([placed.level_of[name], [cell]])
-    # level 的名稱是識別字，不會有空白；加上前綴跟元素分開
-    for name, rect in placed.levels.items():
-        elements[f"level {name}"] = _digest(list(rect))
+    levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}
     by_level: dict[str, list[list[object]]] = {name: [] for name in placed.levels}
     for name, x, y in name_positions(placed, areas):
         by_level[placed.level_of[name]].append([name, x, y])
@@ -144,6 +142,7 @@ def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, 
         "version": VERSION,
         "content": content(target),
         "elements": elements,
+        "levels": levels,
         "labels": by_level,
     }
 
@@ -174,9 +173,9 @@ def labels(saved: dict[str, Any] | None, level: str) -> list[tuple[str, float, f
     if not isinstance(found, dict):
         return []
     table = cast(dict[str, Any], found)
-    if saved and saved.get("version") == 2:  # 2 版：{"level": 名稱, "names": [...]}
-        table = {table.get("level"): table.get("names", [])}
     try:
+        if saved and saved.get("version") == 2:  # 2 版：{"level": 名稱, "names": [...]}
+            table = {table.get("level"): table.get("names", [])}
         listed = table.get(level, [])
         names = [(str(n), float(x), float(y)) for n, x, y in listed]
     except (KeyError, TypeError, ValueError):
@@ -303,14 +302,15 @@ def comparable(saved: dict[str, Any], current: Content) -> Content:
 
 
 def moved(
-    old: dict[str, Any] | None, new: dict[str, Any]
+    old: dict[str, Any] | None, new: dict[str, Any], key: str = "elements"
 ) -> tuple[list[str], list[str], list[str]]:
-    """跟上次生成比：（位置變了的、新的、不見的）元素名稱；level 寫成 `level <名稱>`。
+    """跟上次生成比：（位置變了的、新的、不見的）名稱；`key` 是 "elements" 或 "levels"。
 
     舊版紀錄的位置寫法不同，不比（當成沒有上次）。
     """
-    before: dict[str, str] = old["elements"] if old and old.get("version") == VERSION else {}
-    after: dict[str, str] = new["elements"]
+    current = old is not None and old.get("version") == VERSION
+    before: dict[str, str] = cast(dict[str, str], old.get(key, {})) if old and current else {}
+    after: dict[str, str] = new.get(key, {})
     changed = sorted(n for n in before.keys() & after.keys() if before[n] != after[n])
     return changed, sorted(after.keys() - before.keys()), sorted(before.keys() - after.keys())
 

@@ -46,14 +46,17 @@ def generate_scene(
     # 規則宣告的 entity 類型變成 LDtk 的 entity 定義，加在範本的 Spawn 旁邊（D-010）
     for kind in rules.entity_types:
         width, height = kind.size
-        add_entity_def(
-            scene,
-            kind.name,
-            color=kind.color,
-            width=width,
-            height=height,
-            field_types=dict(kind.fields),
-        )
+        try:
+            add_entity_def(
+                scene,
+                kind.name,
+                color=kind.color,
+                width=width,
+                height=height,
+                field_types=dict(kind.fields),
+            )
+        except SceneError as error:
+            raise SceneError(f"entity_types.{kind.name}：{error}") from error
 
     project["levels"].clear()  # 範本附的 Level_0
     grid = project["defaultGridSize"]
@@ -76,12 +79,12 @@ def generate_scene(
         for name, lv in levels.items()
     }
     for entity in rules.entities:
-        level = levels[placed.level_of[entity.name]]
-        entity_layer = entity_layers[level["identifier"]]
+        name = placed.level_of[entity.name]
+        entity_layer = entity_layers[name]
         x, y = placed.entities[entity.name]
         before = len(entity_layer["entityInstances"])
         try:
-            instance = place_entity(scene, level["identifier"], entity.type, x=x, y=y)
+            instance = place_entity(scene, name, entity.type, x=x, y=y)
         except SceneError as error:
             # 位置由配置器保證在 level 內、圖層上面檢查過；剩下會失敗的都出在 entity 定義
             raise SceneError(f"{entity.name}.type：{error}") from error

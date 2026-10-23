@@ -443,12 +443,24 @@ def test_example_summary_and_previews_cover_every_level(tmp_path: Path) -> None:
     shutil.copy(EXAMPLE, record.rules_path(path))
     actions.generate_scene(path)
     text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
-    record.rules_path(path).write_text(
-        text[: text.index("[[portal]]")].replace('name = "Village"', 'name = "Village"', 1),
-        encoding="utf-8",
-    )
-    result = actions.generate_scene(path, force=True)
+    record.rules_path(path).write_text(text[: text.index("[[portal]]")], encoding="utf-8")
+    result = actions.generate_scene(path)  # 規則改了、地圖沒被直接改過：不必 force
     assert "level 新的：House1" in result.summary
     again = actions.generate_scene(path)
     assert {p.stem for p in again.previews} == {"Village", "House1"}
     assert "沒有元素移動" in again.summary
+
+
+def test_example_old_record_still_gets_names(tmp_path: Path) -> None:
+    """2 版紀錄、地圖沒被改過：預覽圖照樣寫元素名稱，不誤判成改過；壞掉的舊格式不當掉。"""
+    path = _generated(tmp_path)
+    saved = record.read_record(path)
+    assert saved is not None
+    old = dict(saved, version=2)
+    old["labels"] = {"level": "Village", "names": saved["labels"]["Village"]}
+    defs = old["content"]["defs"]
+    defs["entities"] = [[n, w, h, len(fs)] for n, w, h, _, fs in defs["entities"]]
+    record.record_path(path).write_bytes(record.dump(old))
+    result = actions.render_level(path, "Village")
+    assert "元素名稱" not in result.summary
+    assert record.labels(dict(old, labels={"level": ["Village"], "names": []}), "Village") == []
