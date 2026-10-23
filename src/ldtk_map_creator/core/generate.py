@@ -15,10 +15,6 @@ from .rules import Rules
 from .scene import SceneMap, add_level, new_scene
 
 
-def _entity_count(scene: SceneMap, level: str) -> int:
-    return sum(len(ly["entityInstances"]) for ly in scene.level(level)["layerInstances"] or [])
-
-
 def element_iid(seed: int, name: str) -> str:
     """元素產生的 entity 的 iid。"""
     return derived_iid(seed, f"element:{name}")
@@ -29,9 +25,11 @@ def generate_scene(rules: Rules, path: Path, *, split: bool = True) -> tuple[Sce
     placed = layout(rules)
     scene = new_scene(path, split=split)
     project = scene.project
+    for layer_type in ("IntGrid", "Entities"):
+        found = [d for d in project["defs"]["layers"] if d["type"] == layer_type]
+        if len(found) != 1:
+            raise SceneError(f"範本要剛好一個 {layer_type} 圖層，現在有 {len(found)} 個")
     intgrid = [d for d in project["defs"]["layers"] if d["type"] == "IntGrid"]
-    if len(intgrid) != 1:
-        raise SceneError(f"範本要剛好一個 IntGrid 圖層，現在有 {len(intgrid)} 個")
     intgrid[0]["intGridValues"] = [
         {"value": k.value, "identifier": k.name, "color": k.color, "tile": None, "groupUid": 0}
         for k in rules.kinds
@@ -44,16 +42,21 @@ def generate_scene(rules: Rules, path: Path, *, split: bool = True) -> tuple[Sce
     value = {k.name: k.value for k in rules.kinds}
     kind = {e.name: e.kind for e in (*rules.areas, *rules.paths)}
     for element, cells in placed.cells.items():
+        if kind[element] not in value:
+            raise SceneError(f"{element}.kind：[kinds] 裡沒有 {kind[element]}")
         paint_cells(scene, name, cells=sorted(cells), value=value[kind[element]])
+    entities_def = next(d["uid"] for d in project["defs"]["layers"] if d["type"] == "Entities")
+    layers = level["layerInstances"] or []
+    entity_layer = next(ly for ly in layers if ly["layerDefUid"] == entities_def)
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
-        before = _entity_count(scene, name)
+        before = len(entity_layer["entityInstances"])
         try:
             instance = place_entity(scene, name, entity.type, x=x, y=y)
         except SceneError as error:
-            # 位置由配置器保證在 level 內；剩下會失敗的都出在 entity 定義（不存在、欄位、標籤、toc）
+            # 位置由配置器保證在 level 內、圖層上面檢查過；剩下會失敗的都出在 entity 定義
             raise SceneError(f"{entity.name}.type：{error}") from error
-        if _entity_count(scene, name) != before + 1:
+        if len(entity_layer["entityInstances"]) != before + 1:
             # 到了 maxCount，先前擺的 entity 被挪走或丟掉
             raise SceneError(f"{entity.name}.type：{entity.type} 的數量到上限了")
         instance["iid"] = element_iid(rules.seed, entity.name)

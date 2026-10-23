@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .errors import SceneError
-from .rules import EDGE, AreaRule, Cell, PathRule, Rules, Side
+from .rules import EDGE, AreaRule, Cell, PathRule, Rules, Side, references
 
 Rect = tuple[int, int, int, int]  # x, y, 寬, 高（格）
 Placeable = AreaRule | PathRule
@@ -42,11 +42,13 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
     placed = {e.name for e in fixed}
     while rest:
         # 從規則檔讀進來的不會成環；直接組出來的 Rules 可能會，照樣報成 SceneError
-        ready = next((e for e in rest if set(_targets(e)) <= placed), None)
+        ready = next((e for e in rest if {r for r, _ in references(e)} <= placed), None)
         if ready is None:
             stuck = rest[0]
-            field = "near" if isinstance(stuck, AreaRule) else "from"
-            raise SceneError(f"{stuck.name}.{field}：指向的元素不存在或互相指向成環，排不出來")
+            ref, field = next((r, f) for r, f in references(stuck) if r not in placed)
+            known = {e.name for e in (*rules.areas, *rules.paths)}
+            reason = "元素互相指向成環，排不出來" if ref in known else f"沒有叫 {ref} 的區域或路徑"
+            raise SceneError(f"{stuck.name}.{field}：{reason}")
         rest.remove(ready)
         order.append(ready)
         placed.add(ready.name)
@@ -75,21 +77,18 @@ def layout(rules: Rules) -> Layout:
     entities: dict[str, Cell] = {}
     taken: dict[Cell, str] = {}
     for entity in rules.entities:
-        cell = entity.at if isinstance(entity.at, tuple) else anchors[entity.at]
+        if isinstance(entity.at, tuple):
+            cell = entity.at
+        elif entity.at in anchors:
+            cell = anchors[entity.at]
+        else:
+            raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
         if cell in taken:
             raise SceneError(f"{entity.name}.at：跟 {taken[cell]} 擺在同一格 {cell}")
         taken[cell] = entity.name
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
     return Layout(dict(grid.cells), anchors, entities, pushed_by)
-
-
-def _targets(element: Placeable) -> tuple[str, ...]:
-    if isinstance(element, AreaRule):
-        return (element.near,) if element.near else ()
-    if element.to.startswith(EDGE):
-        return (element.start,)
-    return (element.start, element.to)
 
 
 class _Grid:
@@ -144,7 +143,8 @@ def _place_area(area: AreaRule, grid: _Grid, rng: random.Random) -> tuple[Rect, 
             raise SceneError(f"{area.name}.at：跟 {'、'.join(sorted(hit))} 重疊")
         return rect, set()
 
-    assert area.near is not None
+    if area.near is None:
+        raise SceneError(f"{area.name}.at：at 與 near 要剛好寫一個")
     target = grid.cells[area.near]
     gap = area.gap
     every: list[Side] = ["north", "east", "south", "west"]
@@ -184,14 +184,8 @@ def _near_spots(target: frozenset[Cell], size: Cell, gap: int, side: Side) -> li
             spots.update((cx + gap + 1, y) for y in range(cy - h + 1, cy + 1))
 
     def clear(x: int, y: int) -> bool:
-        # 區域本身與中間隔開的 gap 格都不能碰到對象
-        band = {
-            "north": (x, y + h, w, gap),
-            "south": (x, y - gap, w, gap),
-            "west": (x + w, y, gap, h),
-            "east": (x - gap, y, gap, h),
-        }[side]
-        return not (_rect_cells((x, y, w, h)) | _rect_cells(band)) & target
+        # 區域四周 gap 格內都不能碰到對象：L 形的對象可能從別的方向更靠近
+        return not _rect_cells((x - gap, y - gap, w + 2 * gap, h + 2 * gap)) & target
 
     return sorted(s for s in spots if clear(*s))
 
@@ -275,20 +269,30 @@ def _link_path(
     rng.shuffle(shapes)
     pushed: set[str] = set()
     for shape in shapes:
-        line = _l_line(a, b, shape)
-        on_line = [c for c in line if c not in ends]
-        if not on_line:
+        segment = _between(_l_line(a, b, shape), grid.cells[path.start], grid.cells[path.to])
+        if not segment:
             continue  # 這種形狀整條落在兩端裡，換另一種
-        cells = frozenset(c for c in _thicken(line, path.width, grid) if c not in ends)
+        # 只加寬兩端之間的那段中線，路才不會繞到起點、終點的背後
+        cells = frozenset(c for c in _thicken(segment, path.width, grid) if c not in ends)
         blockers = grid.owners(cells)
         if blockers:
             pushed |= blockers
             continue
-        return cells, on_line[0], on_line[-1], pushed
+        return cells, segment[0], segment[-1], pushed
     if not pushed:
         raise SceneError(f"{path.name}.to：{path.start} 跟 {path.to} 已經相接，路徑沒有格")
     blocked = "、".join(sorted(pushed))
     raise SceneError(f"{path.name}.to：從 {path.start} 到 {path.to} 的路都被 {blocked} 擋住")
+
+
+def _between(line: list[Cell], start: frozenset[Cell], end: frozenset[Cell]) -> list[Cell]:
+    """中線上最後一次離開起點之後、第一次碰到終點之前的那一段。
+
+    中線離開 L 形的對象又繞回來時，只留真的連起兩端的那段，不留殘枝。
+    """
+    stop = next((i for i, c in enumerate(line) if c in end), len(line))
+    begin = max((i for i in range(stop) if line[i] in start), default=-1) + 1
+    return line[begin:stop]
 
 
 def _middle_cell(grid: _Grid, name: str) -> Cell:

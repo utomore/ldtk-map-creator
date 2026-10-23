@@ -255,15 +255,18 @@ def _check_kind(kind: str, kinds: set[str], where: str) -> None:
         raise SceneError(f"{where}：[kinds] 裡沒有 {kind}")
 
 
+def references(element: AreaRule | PathRule) -> tuple[tuple[str, str], ...]:
+    """元素指向哪些元素：（被指的元素名, 用哪個欄位指）。成環檢查與排列順序共用。"""
+    if isinstance(element, AreaRule):
+        return ((element.near, "near"),) if element.near else ()
+    if element.to.startswith(EDGE):
+        return ((element.start, "from"),)
+    return ((element.start, "from"), (element.to, "to"))
+
+
 def _check_cycles(rules: Rules) -> None:
     """區域靠近誰、路徑從哪裡到哪裡，不能繞回自己，不然排不出來。"""
-    edges: dict[str, list[tuple[str, str]]] = {}
-    for area in rules.areas:
-        edges[area.name] = [(area.near, "near")] if area.near else []
-    for path in rules.paths:
-        edges[path.name] = [(path.start, "from")]
-        if not path.to.startswith(EDGE):
-            edges[path.name].append((path.to, "to"))
+    edges = {e.name: list(references(e)) for e in (*rules.areas, *rules.paths)}
 
     # 不用遞迴：參照鏈很長時也不會超過 Python 的遞迴上限
     done: set[str] = set()

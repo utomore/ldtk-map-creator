@@ -112,6 +112,10 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
             )
         ]
         assert sides and (area.side is None or area.side in sides), (area.name, sides)
+        # 四周 gap 格內都碰不到對象（對象是 L 形時可能從別的方向更靠近）
+        g = area.gap
+        around = {(cx, cy) for cx in range(x - g, x + w + g) for cy in range(y - g, y + h + g)}
+        assert not around & target, area.name
 
     def touches(cells: frozenset[tuple[int, int]], others: frozenset[tuple[int, int]]) -> bool:
         return any((x + dx, y + dy) in others for x, y in cells for dx, dy in STEPS)
@@ -176,7 +180,7 @@ def test_gen_3_failure_names_an_element(r: Rules) -> None:
         names = {e.name for e in (*r.areas, *r.paths, *r.entities)}
         head = str(error).split("：", 1)[0]
         element, _, field = head.partition(".")
-        assert element in names and field in ("at", "near", "to", "type"), str(error)
+        assert element in names and field in ("at", "near", "to"), str(error)
 
 
 @st.composite
@@ -390,3 +394,54 @@ def test_example_every_side_has_room(side: Side) -> None:
     hx, hy, hw, hh = _bbox(placed.cells["house"])
     gaps = {"north": 9 - (hy + hh), "south": hy - 11, "west": 9 - (hx + hw), "east": hx - 11}
     assert gaps[side] == 2
+
+
+def test_example_wide_link_path_stays_between_its_ends() -> None:
+    """曾經壞過的地方：寬的 L 形路不繞到兩端的背後（a 在 x=2、b 在 x=12）。"""
+    placed = layout(
+        dataclasses.replace(
+            _two_areas(0, (2, 2, 1, 1), (12, 2, 1, 1)), paths=(PathRule("link", "k", "a", "b", 3),)
+        )
+    )
+    xs = {x for x, _ in placed.cells["link"]}
+    assert min(xs) >= 2 and max(xs) <= 12
+
+
+def test_example_near_l_shaped_path_keeps_gap_on_every_side() -> None:
+    """曾經壞過的地方：靠近 L 形路的區域，路的另一段也不能比 gap 更近。
+
+    路先橫後直（y=10 橫過去、x=10 豎下來）時，豎段西邊緊貼著橫段下方的位置要排除。
+    """
+    # 這幾個 seed 在修正前會把區域貼到橫段下方
+    for seed in (36, 37, 71, 76, 85, 86, 95, 124, 126, 127):
+        base = _two_areas(seed, (0, 10, 1, 1), (10, 19, 1, 1))
+        house = AreaRule("house", "k", (2, 2), near="link", side="west", gap=2)
+        try:
+            placed = layout(dataclasses.replace(base, areas=(*base.areas, house)))
+        except SceneError:
+            continue  # 修正後這個位置排不進去也算對：重點是不能貼著路
+        x, y, _, _ = _bbox(placed.cells["house"])
+        around = {(cx, cy) for cx in range(x - 2, x + 4) for cy in range(y - 2, y + 4)}
+        assert not around & placed.cells["link"], seed
+
+
+@pytest.mark.parametrize(
+    ("change", "where"),
+    [
+        ("entity_anchor", r"^ghost\.at"),
+        ("no_position", r"^lost\.at"),
+        ("missing_target", r"^lost\.near"),
+    ],
+)
+def test_example_unparsed_rules_raise_scene_error(change: str, where: str) -> None:
+    """沒經過規則檔檢查、直接組出來的規則寫錯，也丟 SceneError，訊息指出元素與欄位。"""
+    base = _two_areas(0, (0, 0, 1, 1), (5, 5, 1, 1))
+    if change == "entity_anchor":
+        r = dataclasses.replace(base, entities=(EntityRule("ghost", "Spawn", "nowhere.center"),))
+    elif change == "no_position":
+        r = dataclasses.replace(base, areas=(*base.areas, AreaRule("lost", "k", (1, 1))))
+    else:
+        lost = AreaRule("lost", "k", (1, 1), near="nowhere")
+        r = dataclasses.replace(base, areas=(*base.areas, lost))
+    with pytest.raises(SceneError, match=where):
+        layout(r)
