@@ -16,6 +16,7 @@ import io
 import math
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -321,10 +322,8 @@ def preview_path(scene: SceneMap, level_id: str) -> Path:
 
 def write_preview(scene: SceneMap, level_id: str, image: Image.Image) -> Path:
     """把 render 好的圖存成那個 level 的預覽圖，回傳路徑。"""
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
     path = preview_path(scene, level_id)
-    atomic_write(path, buffer.getvalue())
+    _write_png(path, image)
     return path
 
 
@@ -338,98 +337,149 @@ WORLD_MAX = 1600
 
 _LINK = (255, 214, 0, 255)
 _WORLD_STROKE = (0, 0, 0, 255)  # 跟總覽的底色分開，名稱蓋到的地方不會看起來像空白
+_WORLD_NAME = 12
 
 
-def world_rects(scene: SceneMap) -> tuple[float, dict[str, tuple[int, int, int, int]]]:
-    """世界總覽的倍率，與每個 level 在總覽裡的位置與大小（像素：左, 上, 寬, 高）。
+@dataclass(frozen=True)
+class WorldView:
+    """世界總覽的版面：倍率、世界原點（像素）、每個 level 在總覽裡的位置與大小。"""
 
-    照 level 的世界座標等比例縮小，左上角留 MARGIN；長邊不超過 WORLD_MAX。
+    scale: float
+    origin: tuple[int, int]
+    rects: dict[str, tuple[int, int, int, int]]
+
+    def point(self, x: float, y: float) -> tuple[int, int]:
+        """世界座標（像素）換成總覽裡的位置；level 的外框與連線都用這一個換算。"""
+        return (
+            MARGIN + round((x - self.origin[0]) * self.scale),
+            MARGIN + round((y - self.origin[1]) * self.scale),
+        )
+
+
+def world_positions(scene: SceneMap) -> dict[str, tuple[int, int]]:
+    """每個 level 的世界座標（像素）。
+
+    線性排法（LinearHorizontal、LinearVertical）的 worldX、worldY 是 -1，照 level 的順序接著排，
+    跟 LDtk 顯示的一樣；其他排法照 worldX、worldY。
     """
+    project = scene.project
+    layout = cast(dict[str, object], project).get("worldLayout")
+    positions: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for level in project["levels"]:
+        if layout == "LinearHorizontal":
+            positions[level["identifier"]] = (offset, 0)
+            offset += level["pxWid"]
+        elif layout == "LinearVertical":
+            positions[level["identifier"]] = (0, offset)
+            offset += level["pxHei"]
+        else:
+            positions[level["identifier"]] = (level["worldX"], level["worldY"])
+    return positions
+
+
+def world_view(scene: SceneMap) -> WorldView:
+    """照 level 的世界座標等比例縮小，左上角留 MARGIN；長邊不超過 WORLD_MAX。"""
     levels = scene.project["levels"]
     if not levels:
         raise SceneError("場景地圖沒有 level，畫不出世界總覽")
-    left = min(lv["worldX"] for lv in levels)
-    top = min(lv["worldY"] for lv in levels)
-    right = max(lv["worldX"] + lv["pxWid"] for lv in levels)
-    bottom = max(lv["worldY"] + lv["pxHei"] for lv in levels)
-    scale = min(1.0, WORLD_MAX / max(right - left, bottom - top))
-    rects = {
-        lv["identifier"]: (
-            MARGIN + round((lv["worldX"] - left) * scale),
-            MARGIN + round((lv["worldY"] - top) * scale),
-            max(1, round(lv["pxWid"] * scale)),
-            max(1, round(lv["pxHei"] * scale)),
-        )
-        for lv in levels
-    }
-    return scale, rects
+    at = world_positions(scene)
+    left = min(at[lv["identifier"]][0] for lv in levels)
+    top = min(at[lv["identifier"]][1] for lv in levels)
+    right = max(at[lv["identifier"]][0] + lv["pxWid"] for lv in levels)
+    bottom = max(at[lv["identifier"]][1] + lv["pxHei"] for lv in levels)
+    scale = min(1.0, WORLD_MAX / max(1, right - left, bottom - top))
+    view = WorldView(scale, (left, top), {})
+    for level in levels:
+        x, y = view.point(*at[level["identifier"]])
+        size = (max(1, round(level["pxWid"] * scale)), max(1, round(level["pxHei"] * scale)))
+        view.rects[level["identifier"]] = (x, y, *size)
+    return view
 
 
 def world_links(scene: SceneMap) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """EntityRef 兩端 entity 中心的世界座標（像素）；互指的一對只算一次，照 iid 排序。"""
+    """EntityRef 從擁有者中心到目標中心的世界座標（像素）；陣列也算，互指的一對只算一次。"""
+    project = scene.project
+    at = world_positions(scene)
+    layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
+    entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
     centers: dict[str, tuple[float, float]] = {}
-    refs: set[tuple[str, str]] = set()
-    defs = {d["uid"]: d for d in scene.project["defs"]["entities"]}
-    for level in scene.project["levels"]:
+    pairs: set[tuple[str, str]] = set()
+    for level in project["levels"]:
+        wx, wy = at[level["identifier"]]
         for layer in level["layerInstances"] or []:
+            ldef = layer_defs.get(layer["layerDefUid"])
+            # 跟 render_level 一樣：圖層實例的偏移加上圖層定義的偏移
+            ox = layer["pxOffsetX"] + (ldef["pxOffsetX"] if ldef else 0)
+            oy = layer["pxOffsetY"] + (ldef["pxOffsetY"] if ldef else 0)
             for entity in layer["entityInstances"]:
-                edef = defs.get(entity["defUid"])
+                edef = entity_defs.get(entity["defUid"])
                 pivot_x, pivot_y = (edef["pivotX"], edef["pivotY"]) if edef else (0.0, 0.0)
-                x = level["worldX"] + layer["pxOffsetX"] + entity["px"][0]
-                y = level["worldY"] + layer["pxOffsetY"] + entity["px"][1]
                 centers[entity["iid"]] = (
-                    x + (0.5 - pivot_x) * entity["width"],
-                    y + (0.5 - pivot_y) * entity["height"],
+                    wx + ox + entity["px"][0] + (0.5 - pivot_x) * entity["width"],
+                    wy + oy + entity["px"][1] + (0.5 - pivot_y) * entity["height"],
                 )
-                for field in entity["fieldInstances"]:
-                    value = field.get("__value")
-                    if field.get("__type") == "EntityRef" and isinstance(value, dict):
-                        target = cast(dict[str, object], value).get("entityIid")
-                        if isinstance(target, str) and target != entity["iid"]:
-                            first, second = sorted((entity["iid"], target))
-                            refs.add((first, second))
-    return [(centers[a], centers[b]) for a, b in sorted(refs) if a in centers and b in centers]
+                for target in _ref_targets(entity):
+                    if target != entity["iid"]:
+                        first, second = sorted((entity["iid"], target))
+                        pairs.add((first, second))
+    return [(centers[a], centers[b]) for a, b in sorted(pairs) if a in centers and b in centers]
+
+
+def _ref_targets(entity: EntityInstance) -> list[str]:
+    found: list[str] = []
+    for field in entity["fieldInstances"]:
+        kind = cast(dict[str, object], field).get("__type")
+        if kind not in ("EntityRef", "Array<EntityRef>"):
+            continue
+        value = cast(dict[str, object], field).get("__value")
+        for item in cast(list[object], value) if isinstance(value, list) else [value]:
+            if isinstance(item, dict):
+                target = cast(dict[str, object], item).get("entityIid")
+                if isinstance(target, str):
+                    found.append(target)
+    return found
 
 
 def render_world(scene: SceneMap) -> Image.Image:
     """世界總覽（D-002）：每個 level 照世界座標畫在一起、標出名稱，EntityRef 兩端之間畫線。"""
-    scale, rects = world_rects(scene)
+    view = world_view(scene)
     levels = scene.project["levels"]
-    left = min(lv["worldX"] for lv in levels)
-    top = min(lv["worldY"] for lv in levels)
-    width = max(x + w for x, _, w, _ in rects.values()) + MARGIN
-    height = max(y + h for _, y, _, h in rects.values()) + MARGIN
+    width = max(x + w for x, _, w, _ in view.rects.values()) + MARGIN
+    height = max(y + h for _, y, _, h in view.rects.values()) + MARGIN
     image = Image.new("RGBA", (width, height), _FRAME)
     draw = ImageDraw.Draw(image, "RGBA")
-    font = _font(12)
     for level in levels:
-        x, y, w, h = rects[level["identifier"]]
-        # 每個 level 先照原尺寸 render，切掉座標邊框，再縮到總覽的大小
-        tile = render_level(scene, level["identifier"], scale=1)
-        tile = tile.crop((MARGIN, MARGIN, MARGIN + level["pxWid"], MARGIN + level["pxHei"]))
+        name = level["identifier"]
+        x, y, w, h = view.rects[name]
+        tile = render_level(scene, name, scale=1)
+        # 切掉座標邊框，再縮到總覽的大小；縮小用 BOX，細線與小 entity 不會忽有忽無
+        inner = tile.crop((MARGIN, MARGIN, tile.width, tile.height))
         # Pillow 的 stub 在 resize 的一個 overload 帶 Unknown，只在這一行放寬
-        resized = tile.resize((w, h), Image.Resampling.NEAREST)  # pyright: ignore[reportUnknownMemberType]
+        resized = inner.resize((w, h), Image.Resampling.BOX)  # pyright: ignore[reportUnknownMemberType]
         image.paste(resized, (x, y))
         draw.rectangle((x, y, x + w - 1, y + h - 1), outline=_LABEL)
     for start, end in world_links(scene):
-        points = [
-            (MARGIN + round((px - left) * scale), MARGIN + round((py - top) * scale))
-            for px, py in (start, end)
-        ]
+        points = [view.point(*start), view.point(*end)]
         draw.line(points, fill=_LINK, width=2)
         for px, py in points:
             draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=_LINK)
-    for level in levels:  # 名稱最後寫，不被線蓋掉
-        x, y, _, _ = rects[level["identifier"]]
-        draw.text(
-            (x + 4, y + 3),
-            level["identifier"],
-            fill=_LABEL,
-            font=font,
-            anchor="lt",
-            stroke_width=2,
-            stroke_fill=_WORLD_STROKE,
-        )
+    for level in levels:  # 名稱最後寫，不被線蓋掉；level 太小就縮字，再放不下就不寫
+        x, y, w, h = view.rects[level["identifier"]]
+        for size in range(_WORLD_NAME, _SMALLEST_NAME - 1, -1):
+            font = _font(size)
+            box = draw.textbbox((0, 0), level["identifier"], font=font, stroke_width=2)
+            if box[2] - box[0] + 6 <= w and box[3] - box[1] + 4 <= h:
+                draw.text(
+                    (x + 3, y + 2),
+                    level["identifier"],
+                    fill=_LABEL,
+                    font=font,
+                    anchor="lt",
+                    stroke_width=2,
+                    stroke_fill=_WORLD_STROKE,
+                )
+                break
     return image
 
 
@@ -439,8 +489,12 @@ def world_preview_path(scene: SceneMap) -> Path:
 
 
 def write_world_preview(scene: SceneMap, image: Image.Image) -> Path:
+    path = world_preview_path(scene)
+    _write_png(path, image)
+    return path
+
+
+def _write_png(path: Path, image: Image.Image) -> None:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-    path = world_preview_path(scene)
     atomic_write(path, buffer.getvalue())
-    return path

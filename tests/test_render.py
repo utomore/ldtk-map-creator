@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 from PIL import Image, ImageChops
 
 from ldtk_map_creator.core import record
-from ldtk_map_creator.core.edit import paint_cells, place_entity
+from ldtk_map_creator.core.edit import add_entity_def, paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import generate_scene
 from ldtk_map_creator.core.record import name_positions
@@ -24,7 +24,7 @@ from ldtk_map_creator.core.render import (
     render_level,
     render_world,
     world_links,
-    world_rects,
+    world_view,
     write_preview,
 )
 from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
@@ -434,7 +434,7 @@ def test_render_6_world_overview(r: Rules) -> None:
     )
     scale = min(1.0, 1600 / span)
     frame = (24, 26, 34, 255)
-    _, rects = world_rects(scene)
+    rects = world_view(scene).rects
     for level in levels:  # 照世界座標等比例縮小，左上角留邊框
         x, y, w, h = rects[level["identifier"]]
         assert (x, y) == (
@@ -464,3 +464,51 @@ def test_render_6_world_overview(r: Rules) -> None:
             for dy in (-1, 0, 1)
         ]
         assert (255, 214, 0) in around, (mx, my)
+
+
+def _two_rooms(tmp_path: Path) -> SceneMap:
+    scene = new_scene(tmp_path / "scene.ldtk")
+    scene.project["levels"].clear()
+    add_level(scene, "Village", width_cells=8, height_cells=4)
+    add_level(scene, "Inn", width_cells=3, height_cells=2, world_x=200, world_y=0)
+    return scene
+
+
+def test_example_linear_layout_lines_levels_up(tmp_path: Path) -> None:
+    """LDtk 的線性排法把世界座標存成 -1：照 level 的順序接著排，不疊成一團。"""
+    scene = _two_rooms(tmp_path)
+    scene.project["worldLayout"] = "LinearHorizontal"  # type: ignore[typeddict-unknown-key]
+    for level in scene.project["levels"]:
+        level["worldX"], level["worldY"] = -1, -1
+    rects = world_view(scene).rects
+    assert rects["Inn"][0] == rects["Village"][0] + rects["Village"][2]
+    assert rects["Inn"][1] == rects["Village"][1]
+
+
+def test_example_links_follow_layer_offsets_and_one_way_refs(tmp_path: Path) -> None:
+    """連線的端點算進圖層定義的偏移（跟 render 一樣）；單向的引用也畫線。"""
+    scene = _two_rooms(tmp_path)
+    add_entity_def(scene, "Sign", field_types={"to": "EntityRef"})
+    target = place_entity(scene, "Inn", "Sign", x=0, y=0)["iid"]
+    place_entity(scene, "Village", "Sign", x=0, y=0, values={"to": target})
+    plain = world_links(scene)
+    assert len(plain) == 1  # 單向也算一條
+    entities = next(d for d in scene.project["defs"]["layers"] if d["type"] == "Entities")
+    entities["pxOffsetX"] = 16
+    moved = world_links(scene)
+    assert [round(a[0] - b[0]) for a, b in zip(moved[0], plain[0], strict=True)] == [16, 16]
+
+
+def test_example_small_level_name_stays_inside(tmp_path: Path) -> None:
+    """level 縮得很小時，名稱縮字或不寫，不蓋到旁邊的 level。"""
+    scene = new_scene(tmp_path / "scene.ldtk")
+    scene.project["levels"].clear()
+    add_level(scene, "A_very_long_level_name", width_cells=2, height_cells=2)
+    add_level(scene, "Huge", width_cells=400, height_cells=10, world_x=40, world_y=0)
+    image = render_world(scene)
+    x, y, w, h = world_view(scene).rects["A_very_long_level_name"]
+    huge = world_view(scene).rects["Huge"]
+    gap = {  # 兩個 level 之間的空地
+        image.getpixel((gx, gy)) for gx in range(x + w, huge[0]) for gy in range(y, y + h)
+    }
+    assert gap <= {(24, 26, 34, 255)}

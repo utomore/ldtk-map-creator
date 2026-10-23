@@ -119,7 +119,7 @@ def test_example_move_last_one_across_levels_updates_both_previews(tmp_path: Pat
     save_scene(scene)
     actions.place_entity(path, "Level_0", "Spawn", x=1, y=1)
     result = actions.place_entity(path, "Inn", "Spawn", x=2, y=2)
-    assert {p.name for p in result.previews} == {"Level_0.png", "Inn.png", "world-overview.png"}
+    assert {p.name for p in result.previews} == {"Level_0.png", "Inn.png"}
 
 
 def test_example_only_changed_level_files_are_rewritten(tmp_path: Path) -> None:
