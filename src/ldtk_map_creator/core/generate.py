@@ -41,7 +41,16 @@ def generate_scene(
     ]
     project["levels"].clear()  # 範本附的 Level_0
     width, height = rules.level_size
-    level = add_level(scene, rules.level_name, width_cells=width, height_cells=height)
+    grid = project["defaultGridSize"]
+    at = rules.levels[0].at or (0, 0)  # 世界座標以格為單位（D-009）
+    level = add_level(
+        scene,
+        rules.level_name,
+        width_cells=width,
+        height_cells=height,
+        world_x=at[0] * grid,
+        world_y=at[1] * grid,
+    )
     name = rules.level_name
 
     value = {k.name: k.value for k in rules.kinds}

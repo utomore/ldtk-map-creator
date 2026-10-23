@@ -371,3 +371,43 @@ def test_example_only_portals_cross_levels(case: str, where: str) -> None:
         data["entity"] = [spawn]
     with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
         parse_rules(data)
+
+
+@pytest.mark.parametrize(
+    ("case", "where"),
+    [
+        ("portal-same-cell", "door_portal.to"),
+        ("type-named-spawn", "entity_types.spawn"),
+    ],
+)
+def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
+    """傳送點兩端在同一格、類型跟範本的 Spawn 撞名，都報錯。
+
+    1 格高的區域，north 與 south 是同一格。
+    """
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    if case == "portal-same-cell":
+        door = {"name": "door", "level": "Village", "kind": "house", "size": [3, 1], "at": [0, 0]}
+        data["area"].append(door)
+        data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
+    else:
+        data["entity_types"]["spawn"] = {}
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+        parse_rules(data)
+
+
+def test_example_level_at_can_be_negative() -> None:
+    """level 的世界座標可以是負的（LDtk 的 Free 佈局）。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    data["level"][1] = {"name": "House1", "size": [12, 10], "at": [-20, -5]}
+    assert parse_rules(data).levels[1].at == (-20, -5)
+
+
+def test_example_level_of_unknown_level_is_scene_error() -> None:
+    """沒經過檢查、直接組出來的規則指向不存在的 level：丟 SceneError，不丟 StopIteration。"""
+    r = load_rules(EXAMPLE)
+    lost = AreaRule("lost", "plaza", (1, 1), at=(0, 0), level="Nope")
+    with pytest.raises(SceneError, match=r"^lost\.level"):
+        r.level_of(lost)

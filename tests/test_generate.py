@@ -465,3 +465,39 @@ def test_example_multi_level_generation_not_yet(tmp_path: Path) -> None:
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
     with pytest.raises(SceneError, match="#36"):
         generate_scene(r, tmp_path / "scene.ldtk")
+
+
+@pytest.mark.parametrize(
+    ("extra", "issue"),
+    [
+        ('[entity_types]\nSign = { color = "#FFFFFF" }\n', "#36"),
+        (
+            '[entity_types]\nPortal = { fields = { target = "EntityRef" } }\n'
+            '[[portal]]\nname = "p"\nfrom = "plaza.north"\nto = "plaza.south"\n',
+            "#37",
+        ),
+    ],
+    ids=["entity-types", "portal"],
+)
+def test_example_unsupported_parts_are_refused(extra: str, issue: str, tmp_path: Path) -> None:
+    """只有一個 level 時，entity 類型與傳送點的生成也還沒做（#36、#37）：講清楚，不默默丟掉。"""
+    path = tmp_path / "x.rules.toml"
+    path.write_text(EXAMPLE.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    with pytest.raises(SceneError, match=issue):
+        generate_scene(load_rules(path), tmp_path / "scene.ldtk")
+
+
+def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
+    """只有一個 level 也照 `at` 擺在世界上（D-009，格為單位）。"""
+    path = tmp_path / "x.rules.toml"
+    text = EXAMPLE.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            '[level]\nname = "Village"\nsize = [40, 30]  # 格',
+            '[[level]]\nname = "Village"\nsize = [40, 30]\nat = [3, -2]',
+        ),
+        encoding="utf-8",
+    )
+    scene, _ = generate_scene(load_rules(path), tmp_path / "scene.ldtk")
+    level = scene.level("Village")
+    assert (level["worldX"], level["worldY"]) == (3 * 16, -2 * 16)

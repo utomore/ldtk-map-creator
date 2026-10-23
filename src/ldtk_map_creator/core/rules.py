@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from . import template
 from .errors import SceneError
 from .fields import FIELD_TYPES
 from .scene import IDENTIFIER, RESERVED_NAMES
@@ -136,9 +137,12 @@ class Rules:
         return self.levels[0].size
 
     def level_of(self, element: "AreaRule | PathRule | EntityRule") -> LevelRule:
-        """元素在哪個 level；沒寫就是第一個。"""
+        """元素在哪個 level；沒寫就是第一個。沒有那個 level 丟 SceneError。"""
         name = element.level or self.levels[0].name
-        return next(lv for lv in self.levels if lv.name == name)
+        found = next((lv for lv in self.levels if lv.name == name), None)
+        if found is None:
+            raise SceneError(f"{element.name}.level：沒有叫 {name} 的 level")
+        return found
 
 
 def load_rules(path: Path) -> Rules:
@@ -193,24 +197,18 @@ def _levels(raw: object) -> tuple[LevelRule, ...]:
         where = f"level.{name}"
         _keys(table, where, required={"name", "size"}, optional={"at", "near", "side", "gap"})
         size = _size(table["size"], f"{where}.size")
-        if "at" in table and "near" in table:
-            raise SceneError(f"{where}.at：at 與 near 只能寫一個")
-        if "near" not in table:
-            for key in ("side", "gap"):
-                if key in table:
-                    raise SceneError(f"{where}.{key}：只有搭配 near 才能寫")
+        _at_or_near(table, where, both_required=False)
         if "at" in table:
-            levels.append(LevelRule(name, size, at=_cell(table["at"], f"{where}.at", "[x, y]")))
-            continue
-        if "near" not in table:
-            if levels:
-                raise SceneError(f"{where}.at：第一個以外的 level 要寫 at 或 near")
+            # 世界座標可以是負的（LDtk 的 Free 佈局）
+            at = _pair(table["at"], f"{where}.at", "[x, y]", minimum=None)
+            levels.append(LevelRule(name, size, at=at))
+        elif "near" in table:
+            near, side, gap = _near_side_gap(table, where)
+            levels.append(LevelRule(name, size, near=near, side=side, gap=gap))
+        elif levels:
+            raise SceneError(f"{where}.at：第一個以外的 level 要寫 at 或 near")
+        else:
             levels.append(LevelRule(name, size))
-            continue
-        near = _name(table["near"], f"{where}.near")
-        side = _side(table.get("side"), f"{where}.side")
-        gap = _int(table.get("gap", DEFAULT_GAP), f"{where}.gap", minimum=0)
-        levels.append(LevelRule(name, size, near=near, side=side, gap=gap))
     return tuple(levels)
 
 
@@ -251,19 +249,33 @@ def _area(raw: object, where: str) -> AreaRule:
     kind = _name(table["kind"], f"{name}.kind")
     size = _size(table["size"], f"{name}.size")
     level = _optional_name(table, "level", name)
-    if ("at" in table) == ("near" in table):
-        raise SceneError(f"{name}.at：at 與 near 要剛好寫一個")
+    _at_or_near(table, name, both_required=True)
     if "at" in table:
-        for key in ("side", "gap"):
-            if key in table:
-                raise SceneError(f"{name}.{key}：只有搭配 near 才能寫")
         at = table["at"]
         position = "center" if at == "center" else _cell(at, f"{name}.at", '"center" 或 [x, y]')
         return AreaRule(name, kind, size, at=position, level=level)
-    near = _name(table["near"], f"{name}.near")
-    side = _side(table.get("side"), f"{name}.side")
-    gap = _int(table.get("gap", DEFAULT_GAP), f"{name}.gap", minimum=0)
+    near, side, gap = _near_side_gap(table, name)
     return AreaRule(name, kind, size, near=near, side=side, gap=gap, level=level)
+
+
+def _at_or_near(table: dict[str, Any], where: str, *, both_required: bool) -> None:
+    """區域與 level 共用的擺法（D-009）：at 或 near 寫一個；side、gap 只搭配 near。"""
+    has_at, has_near = "at" in table, "near" in table
+    if has_at and has_near:
+        raise SceneError(f"{where}.at：at 與 near 只能寫一個")
+    if both_required and not (has_at or has_near):
+        raise SceneError(f"{where}.at：at 與 near 要剛好寫一個")
+    if not has_near:
+        for key in ("side", "gap"):
+            if key in table:
+                raise SceneError(f"{where}.{key}：只有搭配 near 才能寫")
+
+
+def _near_side_gap(table: dict[str, Any], where: str) -> tuple[str, Side | None, int]:
+    near = _name(table["near"], f"{where}.near")
+    side = _side(table.get("side"), f"{where}.side")
+    gap = _int(table.get("gap", DEFAULT_GAP), f"{where}.gap", minimum=0)
+    return near, side, gap
 
 
 def _path(raw: object, where: str) -> PathRule:
@@ -322,11 +334,15 @@ def _portal(raw: object, where: str, types: tuple[EntityType, ...]) -> PortalRul
 
 def _entity_types(raw: object) -> tuple[EntityType, ...]:
     found: list[EntityType] = []
+    # 範本已經有的 entity 定義（Spawn）照舊能用，宣告的類型不能跟它們同名
+    builtin = {d["identifier"].lower() for d in template.project()["defs"]["entities"]}
     for name, value in _table(raw, "entity_types").items():
         where = f"entity_types.{name}"
         _name(name, where)
         if any(t.name.lower() == name.lower() for t in found):
             raise SceneError(f"{where}：類型名稱重複（不分大小寫）")
+        if name.lower() in builtin:
+            raise SceneError(f"{where}：範本已經有 {name} 這個 entity 定義，換個名字")
         table = _table(value, where)
         _keys(table, where, required=set(), optional={"color", "size", "fields"})
         color = _str(table.get("color", DEFAULT_ENTITY_COLOR), f"{where}.color")
@@ -383,7 +399,12 @@ def _check_links(rules: Rules) -> None:
             raise SceneError(f"{element.name}.level：沒有叫 {element.level} 的 level")
 
     kinds = {k.name for k in rules.kinds}
-    level_of = {e.name: rules.level_of(e).name for e in (*rules.areas, *rules.paths)}
+    by_name = {lv.name: lv for lv in rules.levels}
+
+    def level_for(element: AreaRule | PathRule | EntityRule) -> LevelRule:
+        return by_name[element.level or rules.levels[0].name]
+
+    level_of = {e.name: level_for(e).name for e in (*rules.areas, *rules.paths)}
     anchors = {f"{a.name}.{s}": level_of[a.name] for a in rules.areas for s in AREA_ANCHORS}
     anchors |= {f"{p.name}.{s}": level_of[p.name] for p in rules.paths for s in PATH_ANCHORS}
 
@@ -396,7 +417,7 @@ def _check_links(rules: Rules) -> None:
             )
 
     for area in rules.areas:
-        level = rules.level_of(area)
+        level = level_for(area)
         width, height = level.size
         _check_kind(area.kind, kinds, f"{area.name}.kind")
         w, h = area.size
@@ -407,7 +428,7 @@ def _check_links(rules: Rules) -> None:
         if area.near is not None:
             target(area.near, f"{area.name}.near", level.name)
     for path in rules.paths:
-        level = rules.level_of(path)
+        level = level_for(path)
         width, height = level.size
         _check_kind(path.kind, kinds, f"{path.name}.kind")
         if path.width > path_width_limit(path, level.size):
@@ -418,7 +439,7 @@ def _check_links(rules: Rules) -> None:
             if path.to == path.start:
                 raise SceneError(f"{path.name}.to：起點與終點是同一個元素 {path.to}")
     for entity in rules.entities:
-        level = rules.level_of(entity)
+        level = level_for(entity)
         width, height = level.size
         if isinstance(entity.at, tuple):
             x, y = entity.at
@@ -433,9 +454,33 @@ def _check_links(rules: Rules) -> None:
         for field, anchor in (("from", portal.start), ("to", portal.to)):
             if anchor not in anchors:
                 raise SceneError(f"{portal.name}.{field}：沒有錨點 {anchor}")
-        if portal.start == portal.to:
-            raise SceneError(f"{portal.name}.to：兩端是同一個錨點 {portal.to}")
+        if portal.start == portal.to or _same_cell(rules, portal.start, portal.to):
+            raise SceneError(f"{portal.name}.to：兩端是同一格（{portal.start}、{portal.to}）")
     _check_cycles(rules)
+
+
+def _same_cell(rules: Rules, a: str, b: str) -> bool:
+    """同一個區域的兩個錨點會不會落在同一格：區域只有 1 格高時 north 與 south 是同一格。"""
+    area_a, _, anchor_a = a.partition(".")
+    area_b, _, anchor_b = b.partition(".")
+    if area_a != area_b:
+        return False
+    area = next((x for x in rules.areas if x.name == area_a), None)
+    if area is None:
+        return False
+    return area_anchor_offset(area.size, anchor_a) == area_anchor_offset(area.size, anchor_b)
+
+
+def area_anchor_offset(size: Cell, anchor: str) -> Cell:
+    """區域的錨點在區域裡的哪一格（相對左上角）；配置器照這裡算（D-010）。"""
+    w, h = size
+    return {
+        "center": (w // 2, h // 2),
+        "north": (w // 2, 0),
+        "south": (w // 2, h - 1),
+        "west": (0, h // 2),
+        "east": (w - 1, h // 2),
+    }[anchor]
 
 
 def path_width_limit(path: PathRule, level_size: Cell) -> int:
@@ -576,7 +621,7 @@ def _int(value: object, where: str, *, minimum: int | None = None) -> int:
     return value
 
 
-def _pair(value: object, where: str, expect: str, minimum: int) -> Cell:
+def _pair(value: object, where: str, expect: str, minimum: int | None) -> Cell:
     if not isinstance(value, list) or len(cast(list[object], value)) != 2:
         raise SceneError(f"{where}：要是 {expect}：{value!r}")
     a, b = cast(list[object], value)

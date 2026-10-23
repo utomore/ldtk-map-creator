@@ -335,7 +335,7 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             levels.append(LevelRule(name, size))
         elif how == "at":
             levels.append(
-                LevelRule(name, size, at=(draw(st.integers(0, 99)), draw(st.integers(0, 99))))
+                LevelRule(name, size, at=(draw(st.integers(-99, 99)), draw(st.integers(-99, 99))))
             )
         else:
             near = draw(st.sampled_from(level_names[:i]))
@@ -396,12 +396,29 @@ def multi_rules(draw: st.DrawFn) -> Rules:
         size = (draw(st.integers(1, 32)), draw(st.integers(1, 32)))
         types.append(EntityType("Sign", "#FFFFFF", size, fields))
     every_anchor = [a for lv in levels for a in anchors[lv.name]]
+    sizes = {area.name: area.size for area in areas}
+
+    def anchor_cell(anchor: str) -> tuple[str, int, int] | None:
+        """區域錨點在區域裡的哪一格，獨立於 core 另算；路徑的錨點回傳 None（排了才知道）。"""
+        owner, _, which = anchor.partition(".")
+        if owner not in sizes:
+            return None
+        w, h = sizes[owner]
+        x = {"west": 0, "east": w - 1}.get(which, w // 2)
+        y = {"north": 0, "south": h - 1}.get(which, h // 2)
+        return owner, x, y
+
+    # 傳送點兩端不能落在同一格（同一個 1 格高的區域，north 與 south 是同一格）
+    pairs = [
+        (a, b)
+        for a in every_anchor
+        for b in every_anchor
+        if a != b and (anchor_cell(a) is None or anchor_cell(a) != anchor_cell(b))
+    ]
     portals: list[PortalRule] = []
-    if len(every_anchor) >= 2:
+    if pairs:
         for name in portal_names:
-            start, to = draw(
-                st.lists(st.sampled_from(every_anchor), min_size=2, max_size=2, unique=True)
-            )
+            start, to = draw(st.sampled_from(pairs))
             portals.append(PortalRule(name, "Portal", start, to))
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     return Rules(
