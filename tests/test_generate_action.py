@@ -464,3 +464,27 @@ def test_example_old_record_still_gets_names(tmp_path: Path) -> None:
     result = actions.render_level(path, "Village")
     assert "元素名稱" not in result.summary
     assert record.labels(dict(old, labels={"level": ["Village"], "names": []}), "Village") == []
+
+
+def test_example_portal_type_change_is_listed(tmp_path: Path) -> None:
+    """只換傳送點的類型（錨點不變），摘要列出它；舊紀錄沒有 portals 時不全列成新的。"""
+    path = tmp_path / "village.ldtk"
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    door = 'Door = { color = "#FFAA00", fields = { to = "EntityRef" } }\n'
+    # 有兩種能互指的類型時，傳送點要寫明用哪一種
+    with_door = text.replace("\n[[area]]", "\n" + door + "\n[[area]]", 1).replace(
+        'name = "house_1_door"', 'name = "house_1_door"\ntype = "Portal"'
+    )
+    rules_file = record.rules_path(path)
+    rules_file.write_text(with_door, encoding="utf-8")
+    actions.generate_scene(path)
+    changed = with_door.replace('type = "Portal"', 'type = "Door"')
+    rules_file.write_text(changed, encoding="utf-8")
+    result = actions.generate_scene(path)
+    assert "位置變了：house_1_door" in result.summary
+    saved = record.read_record(path)
+    assert saved is not None
+    old = {k: v for k, v in saved.items() if k != "portals"}
+    record.record_path(path).write_bytes(record.dump(old))
+    again = actions.generate_scene(path)
+    assert "house_1_door" not in again.summary

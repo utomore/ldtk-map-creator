@@ -6,12 +6,13 @@
 import random
 from pathlib import Path
 
+from . import fields
 from .derived import refresh_derived
-from .edit import add_entity_def, paint_cells, place_entity, set_entity_fields
+from .edit import add_entity_def, paint_cells, place_entity
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
-from .model import Level
+from .model import EntityInstance, Level
 from .rules import Rules, portal_ref_field
 from .scene import SceneMap, add_level, new_scene
 
@@ -75,44 +76,24 @@ def generate_scene(
             raise SceneError(f"{element}.kind：[kinds] 裡沒有 {kind_of[element]}")
         level = placed.level_of[element]
         paint_cells(scene, level, cells=sorted(cells), value=value[kind_of[element]])
-    entities_def = next(d["uid"] for d in project["defs"]["layers"] if d["type"] == "Entities")
-    entity_layers = {
-        name: next(ly for ly in lv["layerInstances"] or [] if ly["layerDefUid"] == entities_def)
-        for name, lv in levels.items()
-    }
     for entity in rules.entities:
-        name = placed.level_of[entity.name]
-        entity_layer = entity_layers[name]
         x, y = placed.entities[entity.name]
-        before = len(entity_layer["entityInstances"])
-        try:
-            instance = place_entity(scene, name, entity.type, x=x, y=y)
-        except SceneError as error:
-            # 位置由配置器保證在 level 內、圖層上面檢查過；剩下會失敗的都出在 entity 定義
-            raise SceneError(f"{entity.name}.type：{error}") from error
-        if len(entity_layer["entityInstances"]) != before + 1:
-            # 到了 maxCount，先前擺的 entity 被挪走或丟掉
-            raise SceneError(f"{entity.name}.type：{entity.type} 的數量到上限了")
-        instance["iid"] = element_iid(rules.seed, entity.name)
+        iid = element_iid(rules.seed, entity.name)
+        _place(scene, placed.level_of[entity.name], entity.type, (x, y), iid, f"{entity.name}.type")
 
     # 傳送點：兩端各擺一個，用類型唯一的 EntityRef 欄位互指（D-010）
     for portal in rules.portals:
         ref = portal_ref_field(rules.entity_types, portal.name, portal.type)  # 先檢查再擺
-        ends = placed.portals[portal.name]
-        iids = portal_iids(rules.seed, portal.name)
-        for i, (field, (level_name, (x, y))) in enumerate(zip(("from", "to"), ends, strict=True)):
-            layer = entity_layers[level_name]
-            before = len(layer["entityInstances"])
-            # 第二端擺的時候第一端已經在了，直接帶上指向它的值
-            values: dict[str, object] | None = {ref: iids[0]} if i == 1 else None
-            try:
-                instance = place_entity(scene, level_name, portal.type, x=x, y=y, values=values)
-            except SceneError as error:
-                raise SceneError(f"{portal.name}.{field}：{error}") from error
-            if len(layer["entityInstances"]) != before + 1:
-                raise SceneError(f"{portal.name}.{field}：{portal.type} 的數量到上限了")
-            instance["iid"] = iids[i]
-        set_entity_fields(scene, iids[0], {ref: iids[1]})
+        (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
+        start, end = portal_iids(rules.seed, portal.name)
+        first = _place(scene, from_level, portal.type, from_cell, start, f"{portal.name}.from")
+        # 第二端擺的時候第一端已經在了，直接帶上指向它的值
+        _place(scene, to_level, portal.type, to_cell, end, f"{portal.name}.to", {ref: start})
+        # 第一端的引用直接寫進欄位；__value 由最後的 refresh_derived 補
+        edef = next(d for d in project["defs"]["entities"] if d["identifier"] == portal.type)
+        fdef = next(f for f in edef["fieldDefs"] if f["identifier"] == ref)
+        instance = next(f for f in first["fieldInstances"] if f["defUid"] == fdef["uid"])
+        fields.set_value(instance, fdef, end)
 
     project["iid"] = derived_iid(rules.seed, "project")
     project["dummyWorldIid"] = derived_iid(rules.seed, "world")
@@ -125,3 +106,38 @@ def generate_scene(
             layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
     refresh_derived(project)
     return scene, placed
+
+
+def _entity_count(scene: SceneMap) -> int:
+    return sum(
+        len(ly["entityInstances"])
+        for lv in scene.project["levels"]
+        for ly in lv["layerInstances"] or []
+    )
+
+
+def _place(
+    scene: SceneMap,
+    level: str,
+    entity_type: str,
+    cell: tuple[int, int],
+    iid: str,
+    label: str,
+    values: dict[str, object] | None = None,
+) -> EntityInstance:
+    """擺一個生成的 entity 並給它推出的 iid；錯誤訊息開頭是 `label`。
+
+    到了 maxCount 時 LDtk 的規則會挪走或丟掉先前擺的（可能在別的 level），
+    所以數整個場景地圖：多了剛好一個才算擺成。
+    """
+    before = _entity_count(scene)
+    x, y = cell
+    try:
+        instance = place_entity(scene, level, entity_type, x=x, y=y, values=values)
+    except SceneError as error:
+        # 位置由配置器保證在 level 內、圖層上面檢查過；剩下會失敗的都出在 entity 定義
+        raise SceneError(f"{label}：{error}") from error
+    if _entity_count(scene) != before + 1:
+        raise SceneError(f"{label}：{entity_type} 的數量到上限了")
+    instance["iid"] = iid
+    return instance

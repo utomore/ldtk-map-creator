@@ -426,7 +426,8 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     areas = {a.name for a in rules.areas}
-    new_record = record.make_record(target, placed, areas)
+    types = {e.name: e.type for e in rules.entities} | {p.name: p.type for p in rules.portals}
+    new_record = record.make_record(target, placed, areas, types)
     summary = _generate_summary(rules, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
     # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
@@ -513,10 +514,9 @@ def _load_current(path: Path, force: bool) -> SceneMap | None:
 
 
 def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[str, Any]) -> str:
-    plain, portals = record.moved(previous, new), record.moved(previous, new, "portals")
-    elements = tuple(sorted(a + b) for a, b in zip(plain, portals, strict=True))
-    moved_levels = record.moved(previous, new, "levels")
-    count = len(new["elements"]) + len(new.get("portals", {}))
+    elements = record.moved(previous, new)
+    moved_levels = record.moved(previous, new, ("levels",))
+    count = record.element_count(new)
     levels = "、".join(f"{lv.name}（{lv.size[0]}x{lv.size[1]} 格）" for lv in rules.levels)
     lines = [f"照規則生成 {levels}，{count} 個元素"]
     if previous is None:

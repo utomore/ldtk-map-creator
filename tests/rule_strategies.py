@@ -500,23 +500,25 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     if draw(st.booleans()):
         types.append(EntityType("Sign", "#FFFFFF", (16, 16), (("label", "String"),)))
         entities = [replace(e, type="Sign") if draw(st.booleans()) else e for e in entities]
-    # 傳送點：連接不同 level 的兩個區域錨點（D-010）
+    # 傳送點（D-010）：兩個錨點，跨 level 或同一個 level 都有，區域與路徑的錨點都用
     areas = tuple(a for part in moved for a in part.areas)
+    paths = tuple(p for part in moved for p in part.paths)
+    anchors = [f"{a.name}.{s}" for a in areas for s in AREA_ANCHORS]
+    anchors += [f"{p.name}.{s}" for p in paths for s in PATH_ANCHORS]
     portals: list[PortalRule] = []
-    pairs = [(a, b) for a in areas for b in areas if a.level != b.level]
-    if pairs:
+    if len(anchors) >= 2:
         types.append(EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"),)))
         for i in range(draw(st.integers(min_portals, 2))):
-            a, b = draw(st.sampled_from(pairs))
-            start = f"{a.name}.{draw(st.sampled_from(AREA_ANCHORS))}"
-            to = f"{b.name}.{draw(st.sampled_from(AREA_ANCHORS))}"
+            start, to = draw(
+                st.lists(st.sampled_from(anchors), min_size=2, max_size=2, unique=True)
+            )
             portals.append(PortalRule(f"door{i}", "Portal", start, to))
     return Rules(
         parts[0].seed,
         tuple(levels),
         parts[0].kinds,
         areas,
-        tuple(p for part in moved for p in part.paths),
+        paths,
         tuple(entities),
         tuple(types),
         tuple(portals),

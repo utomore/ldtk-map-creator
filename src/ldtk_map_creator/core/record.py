@@ -125,17 +125,21 @@ def _fields(owner: object) -> list[list[object]]:
     return [[f.get("defUid"), f.get("__value")] for f in found]
 
 
-def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, Any]:
+def make_record(
+    target: SceneMap, placed: Layout, areas: set[str], types: dict[str, str] | None = None
+) -> dict[str, Any]:
     """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素與 level 的位置（用來說誰移動了），
-    以及每個 level 的預覽圖要寫的元素名稱。
+    以及每個 level 的預覽圖要寫的元素名稱。`types` 是 entity 與傳送點的類型，
+    只換類型時也算位置變了。
     """
+    types = types or {}
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
         elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
-        elements[name] = _digest([placed.level_of[name], [cell]])
+        elements[name] = _digest([placed.level_of[name], [cell], types.get(name)])
     portals = {
-        name: _digest([[level, [cell]] for level, cell in ends])
+        name: _digest([[[level, [cell]] for level, cell in ends], types.get(name)])
         for name, ends in placed.portals.items()
     }
     levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}
@@ -307,17 +311,30 @@ def comparable(saved: dict[str, Any], current: Content) -> Content:
 
 
 def moved(
-    old: dict[str, Any] | None, new: dict[str, Any], key: str = "elements"
+    old: dict[str, Any] | None, new: dict[str, Any], keys: tuple[str, ...] = ("elements", "portals")
 ) -> tuple[list[str], list[str], list[str]]:
-    """跟上次生成比：（位置變了的、新的、不見的）名稱；`key` 是 "elements"、"levels" 或 "portals"。
+    """跟上次生成比：（位置變了的、新的、不見的）名稱；`keys` 是要比的部分，預設是元素與傳送點。
 
-    舊版紀錄的位置寫法不同，不比（當成沒有上次）。
+    舊版紀錄的位置寫法不同、或還沒有那個部分（例如還沒記傳送點），那部分不比。
     """
+    changed: list[str] = []
+    added: list[str] = []
+    removed: list[str] = []
     current = old is not None and old.get("version") == VERSION
-    before: dict[str, str] = cast(dict[str, str], old.get(key, {})) if old and current else {}
-    after: dict[str, str] = new.get(key, {})
-    changed = sorted(n for n in before.keys() & after.keys() if before[n] != after[n])
-    return changed, sorted(after.keys() - before.keys()), sorted(before.keys() - after.keys())
+    for key in keys:
+        after: dict[str, str] = new.get(key, {})
+        if old is not None and (not current or key not in old):
+            continue
+        before: dict[str, str] = cast(dict[str, str], old.get(key, {})) if old else {}
+        changed += [n for n in before.keys() & after.keys() if before[n] != after[n]]
+        added += list(after.keys() - before.keys())
+        removed += list(before.keys() - after.keys())
+    return sorted(changed), sorted(added), sorted(removed)
+
+
+def element_count(saved: dict[str, Any]) -> int:
+    """紀錄裡有幾個元素（區域、路徑、entity、傳送點）。"""
+    return len(saved["elements"]) + len(saved.get("portals", {}))
 
 
 def _digest(value: object) -> str:

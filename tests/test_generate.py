@@ -649,9 +649,13 @@ def test_gen_8_portals_link_both_ends(r: Rules) -> None:
     level_iids = {lv["identifier"]: lv["iid"] for lv in loaded.project["levels"]}
     areas = {a.name: a for a in r.areas}
 
+    paths = {p.name: p for p in r.paths}
+
     def anchor_spot(anchor: str) -> tuple[str, tuple[int, int]]:
-        """錨點在哪個 level、哪一格，獨立於配置器另算（區域的格加上錨點的算式）。"""
+        """錨點在哪個 level、哪一格；區域的錨點獨立於配置器另算（區域的格加上錨點的算式）。"""
         owner, _, which = anchor.partition(".")
+        if owner in paths:  # 路徑的錨點要排了才知道（GEN-2 檢查它在路上、靠對的那頭）
+            return r.level_of(paths[owner]).name, placed.anchors[anchor]
         x, y, w, h = _bbox(placed.cells[owner])
         dx = {"west": 0, "east": w - 1}.get(which, w // 2)
         dy = {"north": 0, "south": h - 1}.get(which, h // 2)
@@ -718,3 +722,24 @@ def test_example_portal_type_checked_before_placing(tmp_path: Path) -> None:
     door = PortalRule("door", "Spawn", "plaza.north", "plaza.south")
     with pytest.raises(SceneError, match=r"^door\.type："):
         generate_scene(dataclasses.replace(r, portals=(door,)), tmp_path / "scene.ldtk")
+
+
+def test_example_portal_across_levels_hits_world_max_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """類型的數量上限是整個世界時，第二端會把另一個 level 的第一端挪走：要擋下來說清楚。"""
+    original = template.entity_def
+
+    def limited() -> EntityDef:
+        found = original()
+        found["maxCount"], found["limitBehavior"], found["limitScope"] = (
+            1,
+            "MoveLastOne",
+            "PerWorld",
+        )
+        return found
+
+    monkeypatch.setattr(template, "entity_def", limited)
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    with pytest.raises(SceneError, match=r"^house_1_door\.to：.*上限"):
+        generate_scene(r, tmp_path / "scene.ldtk")

@@ -105,20 +105,30 @@ def layout(rules: Rules) -> Layout:
         cells |= grid.cells
 
     taken: dict[tuple[str, Cell], str] = {}
+
+    def spot_of(label: str, at: str | Cell, level: str | None) -> tuple[str, Cell]:
+        """錨點（或固定的格）換成（level, 格），並佔下那一格。
+
+        `level` 是 entity 所在的 level：錨點要在同一個 level；傳送點給 None，兩端可以跨 level。
+        """
+        if isinstance(at, tuple):
+            assert level is not None
+            spot = (level, at)
+        elif at in anchors:
+            owner = level_of[at.split(".", 1)[0]]
+            if level is not None and owner != level:  # 讀規則檔時擋過；直接組出來的照樣擋
+                raise SceneError(f"{label}：{at} 在 level {owner}，不在 {level}")
+            spot = (owner, anchors[at])
+        else:
+            raise SceneError(f"{label}：沒有錨點 {at}")
+        if spot in taken:
+            raise SceneError(f"{label}：跟 {taken[spot]} 擺在同一格 {spot[1]}")
+        taken[spot] = label.removesuffix(".at")
+        return spot
+
     for entity in rules.entities:
         level = rules.level_of(entity).name
-        if isinstance(entity.at, tuple):
-            cell = entity.at
-        elif entity.at in anchors:
-            owner = level_of[entity.at.split(".", 1)[0]]
-            if owner != level:  # 讀規則檔時擋過；直接組出來的規則照樣報成 SceneError
-                raise SceneError(f"{entity.name}.at：{entity.at} 在 level {owner}，不在 {level}")
-            cell = anchors[entity.at]
-        else:
-            raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
-        if (level, cell) in taken:
-            raise SceneError(f"{entity.name}.at：跟 {taken[(level, cell)]} 擺在同一格 {cell}")
-        taken[(level, cell)] = entity.name
+        _, cell = spot_of(f"{entity.name}.at", entity.at, level)
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
         level_of[entity.name] = level
@@ -126,16 +136,9 @@ def layout(rules: Rules) -> Layout:
     # 傳送點（D-010）：兩端各一個 entity，不能落在同一格，也不跟別的 entity 擠在同一格
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]] = {}
     for portal in rules.portals:
-        ends: list[tuple[str, Cell]] = []
-        for field, anchor in (("from", portal.start), ("to", portal.to)):
-            if anchor not in anchors:
-                raise SceneError(f"{portal.name}.{field}：沒有錨點 {anchor}")
-            spot = (level_of[anchor.split(".", 1)[0]], anchors[anchor])
-            if spot in taken:
-                raise SceneError(f"{portal.name}.{field}：跟 {taken[spot]} 擺在同一格 {spot[1]}")
-            taken[spot] = f"{portal.name}.{field}"
-            ends.append(spot)
-        portals[portal.name] = (ends[0], ends[1])
+        start = spot_of(f"{portal.name}.from", portal.start, None)
+        end = spot_of(f"{portal.name}.to", portal.to, None)
+        portals[portal.name] = (start, end)
     return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals)
 
 
