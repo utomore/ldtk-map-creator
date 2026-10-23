@@ -21,6 +21,11 @@ def cell_count(px: int, grid: int) -> int:
     return math.ceil(px / grid)
 
 
+def level_bg_color(project: Project, level: Level) -> str:
+    """level 的背景色：自己設的，否則用專案預設（`__bgColor` 與 render 共用）。"""
+    return level["bgColor"] or project["defaultLevelBgColor"]
+
+
 def refresh_derived(project: Project, only: Level | None = None) -> None:
     """配發缺的 `iid` 與 `uid`，再依 defs 與本體欄位重算 `__` 欄位。
 
@@ -67,7 +72,7 @@ def _refresh_level(
     entity_defs: dict[int, EntityDef],
     tileset_paths: dict[int, str | None],
 ) -> None:
-    level["__bgColor"] = level["bgColor"] or project["defaultLevelBgColor"]
+    level["__bgColor"] = level_bg_color(project, level)
     layers = level["layerInstances"]
     if layers is None:
         raise SceneError(f"level {level['identifier']} 的圖層還沒載入")

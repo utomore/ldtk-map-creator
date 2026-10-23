@@ -1,7 +1,6 @@
 """場景地圖：從範本建立、新增 level、讀寫檔（D-002、D-006）。"""
 
 import json
-import os
 import random
 import re
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from typing import Any, cast
 from . import template
 from .derived import UNASSIGNED_UID, cell_count, refresh_derived
 from .errors import SceneError
+from .files import atomic_write
 from .model import LayerInstance, Level, Project
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -159,11 +159,8 @@ def _load(path: Path) -> SceneMap:
 
 
 def _write_json(path: Path, data: object) -> None:
-    """先寫暫存檔再換名，寫到一半中斷也不會留下半個檔。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent="\t") + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    text = json.dumps(data, ensure_ascii=False, indent="\t") + "\n"
+    atomic_write(path, text.encode("utf-8"))
 
 
 def save_scene(scene: SceneMap) -> list[Path]:

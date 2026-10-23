@@ -96,6 +96,7 @@ LayerInstance = TypedDict(
         "layerDefUid": int,
         "pxOffsetX": int,
         "pxOffsetY": int,
+        "visible": bool,
         "seed": int,
         "overrideTilesetUid": int | None,
         "intGridCsv": list[int],

@@ -24,3 +24,8 @@
 - **SCENE-4**：擺放或移動到 (x, y) 格的 entity，寫出再讀回後 `__grid` 是 [x, y]，不論 pivot；刪除後它的 iid 不在場景地圖裡。
 
 ## RENDER：預覽圖
+
+- **RENDER-1**：PNG 的尺寸是座標邊框加上 level 像素乘以倍率：`(MARGIN + pxWid × scale, MARGIN + pxHei × scale)`。
+- **RENDER-2**：沒被 entity 或名稱蓋住的 IntGrid 格，格子中心的顏色是看得見的最上層非 0 值定義的顏色（圖層不透明時）；全部是 0 的格是 level 背景色。
+- **RENDER-3**：每個 entity 方塊中心的顏色是它定義的顏色。
+- **RENDER-4**：同一個環境裡，同一份場景地圖 render 兩次、或寫出再讀回後 render，PNG 的位元組完全相同；render 不改動場景地圖。

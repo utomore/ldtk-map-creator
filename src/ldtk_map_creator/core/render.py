@@ -1,0 +1,217 @@
+"""把 level render 成 PNG 預覽（北極星：每一步看得到成果）。
+
+畫法固定，讓同一份場景地圖在同一個環境每次 render 出一樣的位元組：
+- 背景是 level 的背景色。
+- 看得見的 IntGrid 從最下層畫到最上層，每個值用定義的顏色與圖層透明度；0 不畫。
+- entity 畫成定義顏色的方塊（用 entity 自己的尺寸），名稱寫在方塊上方；貼著上緣時寫在下方。
+- 格線，加上方與左邊的格子座標，方便在對話裡指定位置。
+- 都加上圖層的像素偏移，跟 LDtk 顯示的位置一致。
+
+render 只讀不改：不呼叫 refresh_derived，所有值從定義與本體欄位算。
+"""
+
+import io
+import re
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+from .derived import cell_count, level_bg_color
+from .errors import SceneError
+from .files import atomic_write
+from .model import EntityDef, EntityInstance, LayerDef, LayerInstance, Level, Project
+from .scene import SceneMap
+
+MARGIN = 28
+"""上方與左邊留給格子座標的像素。"""
+
+_GRID_LINE = (255, 255, 255, 40)
+_LABEL = (230, 230, 230, 255)
+_FRAME = (24, 26, 34, 255)
+_HEX = re.compile(r"#?[0-9A-Fa-f]{6}")
+
+
+def _rgb(color: str, opacity: float = 1.0) -> tuple[int, int, int, int]:
+    if not _HEX.fullmatch(color):
+        raise SceneError(f"顏色格式不對：{color}")
+    value = color.lstrip("#")
+    alpha = round(max(0.0, min(1.0, opacity)) * 255)
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), alpha)
+
+
+def image_size(level: Level, scale: int) -> tuple[int, int]:
+    """PNG 的尺寸：座標邊框加上 level 像素乘以倍率（RENDER-1）。"""
+    return MARGIN + level["pxWid"] * scale, MARGIN + level["pxHei"] * scale
+
+
+def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    # Pillow 10.1 起內建可縮放的預設字型（pyproject 鎖 pillow>=10.1）
+    return ImageFont.load_default(size)
+
+
+def _offset(layer: LayerInstance, ldef: LayerDef, scale: int) -> tuple[int, int]:
+    return (
+        MARGIN + (layer["pxOffsetX"] + ldef["pxOffsetX"]) * scale,
+        MARGIN + (layer["pxOffsetY"] + ldef["pxOffsetY"]) * scale,
+    )
+
+
+def _label_grid(
+    project: Project, level: Level, layer_defs: dict[int, LayerDef], scale: int
+) -> tuple[int, int, int]:
+    """格線與座標跟著看得見的最上層 IntGrid：格子大小與偏移都一樣，跟 paint_cells 的格座標一致。
+
+    回傳（格子大小, 原點 x, 原點 y）；沒有看得見的 IntGrid 才用預設格子大小、無偏移。
+    """
+    for layer in level["layerInstances"] or []:
+        ldef = layer_defs.get(layer["layerDefUid"])
+        if ldef is not None and ldef["type"] == "IntGrid" and layer["visible"]:
+            return (ldef["gridSize"], *_offset(layer, ldef, scale))
+    return project["defaultGridSize"], MARGIN, MARGIN
+
+
+def render_level(scene: SceneMap, level_id: str, *, scale: int = 2) -> Image.Image:
+    """render 一個 level；`scale` 是每個 LDtk 像素放大幾倍。不改動場景地圖。"""
+    if scale < 1:
+        raise SceneError(f"倍率至少 1：{scale}")
+    project = scene.project
+    level = scene.level(level_id)
+    layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
+    entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
+    image = Image.new("RGBA", image_size(level, scale), _FRAME)
+    draw = ImageDraw.Draw(image, "RGBA")
+    background = level_bg_color(project, level)
+    right = MARGIN + level["pxWid"] * scale - 1
+    bottom = MARGIN + level["pxHei"] * scale - 1
+    draw.rectangle((MARGIN, MARGIN, right, bottom), fill=_rgb(background))
+    layers = level["layerInstances"] or []
+    for layer in layers:
+        if layer["layerDefUid"] not in layer_defs:
+            raise SceneError(f"圖層 {layer['iid']} 的定義不見了")
+    visible = [ly for ly in layers if ly["visible"]]
+    # LDtk 的圖層清單第一個在最上面，所以倒著畫
+    for layer in reversed(visible):
+        ldef = layer_defs[layer["layerDefUid"]]
+        if ldef["type"] == "IntGrid":
+            _draw_intgrid(draw, level, layer, ldef, scale)
+    boxes: list[tuple[EntityDef, tuple[int, int, int, int]]] = []
+    for layer in reversed(visible):
+        ldef = layer_defs[layer["layerDefUid"]]
+        for entity in layer["entityInstances"]:
+            edef = entity_defs.get(entity["defUid"])
+            if edef is None:
+                raise SceneError(f"entity {entity['iid']} 的定義不見了")
+            boxes.append((edef, _entity_box(layer, ldef, edef, entity, scale)))
+    # 方塊外的名稱先寫、再畫方塊：名稱可能比一格寬，不能蓋住別的 entity 方塊；
+    # 寫在方塊裡的名稱最後寫，才不會被自己的方塊蓋掉
+    labels = [(edef["identifier"], _label_place(box, image.size[1], scale)) for edef, box in boxes]
+    font = _font(_label_size(scale))
+    for name, (xy, anchor, inside) in labels:
+        if not inside:
+            draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
+    for edef, box in boxes:
+        draw.rectangle(box, fill=_rgb(edef["color"]), outline=_LABEL)
+    for name, (xy, anchor, inside) in labels:
+        if inside:
+            draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
+    _draw_grid(draw, level, _label_grid(project, level, layer_defs, scale), scale)
+    return image
+
+
+def _draw_intgrid(
+    draw: ImageDraw.ImageDraw, level: Level, layer: LayerInstance, ldef: LayerDef, scale: int
+) -> None:
+    grid = ldef["gridSize"]
+    cols = cell_count(level["pxWid"], grid)
+    rows = cell_count(level["pxHei"], grid)
+    csv = layer["intGridCsv"]
+    if len(csv) != cols * rows:
+        raise SceneError(f"圖層 {ldef['identifier']} 有 {len(csv)} 格，尺寸是 {cols}x{rows}")
+    opacity = ldef["displayOpacity"]
+    colors = {v["value"]: _rgb(v["color"], opacity) for v in ldef["intGridValues"]}
+    left, top = _offset(layer, ldef, scale)
+    cell = grid * scale
+    for index, value in enumerate(csv):
+        if value == 0:
+            continue
+        color = colors.get(value)
+        if color is None:
+            raise SceneError(f"圖層 {ldef['identifier']} 的值 {value} 沒有定義")
+        x = left + (index % cols) * cell
+        y = top + (index // cols) * cell
+        draw.rectangle((x, y, x + cell - 1, y + cell - 1), fill=color)
+
+
+def _entity_box(
+    layer: LayerInstance,
+    ldef: LayerDef,
+    edef: EntityDef,
+    entity: EntityInstance,
+    scale: int,
+) -> tuple[int, int, int, int]:
+    width, height = entity["width"], entity["height"]
+    if width < 1 or height < 1:
+        raise SceneError(f"entity {entity['iid']} 的尺寸不對：{width}x{height}")
+    origin_x, origin_y = _offset(layer, ldef, scale)
+    left = origin_x + round((entity["px"][0] - edef["pivotX"] * width) * scale)
+    top = origin_y + round((entity["px"][1] - edef["pivotY"] * height) * scale)
+    return left, top, left + width * scale - 1, top + height * scale - 1
+
+
+def _label_size(scale: int) -> int:
+    return max(10, 6 * scale)
+
+
+def _label_place(
+    box: tuple[int, int, int, int], image_height: int, scale: int
+) -> tuple[tuple[int, int], str, bool]:
+    """名稱寫在方塊上方；上方會蓋到欄座標就寫在下方；下方也超出圖就寫在方塊裡。
+
+    回傳（位置, 錨點, 是否寫在方塊裡）。
+    """
+    left, top, _, bottom = box
+    size = _label_size(scale)
+    if top - 2 - size >= MARGIN:
+        return (left, top - 2), "lb", False
+    if bottom + 2 + size <= image_height:
+        return (left, bottom + 2), "lt", False
+    return (left + 2, top + 2), "lt", True
+
+
+def _draw_grid(
+    draw: ImageDraw.ImageDraw, level: Level, origin: tuple[int, int, int], scale: int
+) -> None:
+    grid, origin_x, origin_y = origin
+    cols = cell_count(level["pxWid"], grid)
+    rows = cell_count(level["pxHei"], grid)
+    cell = grid * scale
+    right = MARGIN + level["pxWid"] * scale - 1
+    bottom = MARGIN + level["pxHei"] * scale - 1
+    font = _font(12)
+    for cx in range(cols + 1):
+        x = min(origin_x + cx * cell, right)
+        draw.line((x, MARGIN, x, bottom), fill=_GRID_LINE)
+        if cx < cols:
+            # 最後一欄可能不滿一格，標籤放在看得見的那一段中間
+            middle = x + (min(x + cell, right + 1) - x) / 2
+            draw.text((middle, MARGIN / 2), str(cx), fill=_LABEL, font=font, anchor="mm")
+    for cy in range(rows + 1):
+        y = min(origin_y + cy * cell, bottom)
+        draw.line((MARGIN, y, right, y), fill=_GRID_LINE)
+        if cy < rows:
+            middle = y + (min(y + cell, bottom + 1) - y) / 2
+            draw.text((MARGIN / 2, middle), str(cy), fill=_LABEL, font=font, anchor="mm")
+
+
+def preview_path(scene: SceneMap, level_id: str) -> Path:
+    """預覽圖的位置：場景地圖旁的 `previews/<主檔名>/<level>.png`（D-002）。"""
+    return scene.path.parent / "previews" / scene.path.stem / f"{level_id}.png"
+
+
+def save_preview(scene: SceneMap, level_id: str, *, scale: int = 2) -> Path:
+    """render 一個 level 並存成 PNG，回傳路徑。"""
+    buffer = io.BytesIO()
+    render_level(scene, level_id, scale=scale).save(buffer, format="PNG")
+    path = preview_path(scene, level_id)
+    atomic_write(path, buffer.getvalue())
+    return path
