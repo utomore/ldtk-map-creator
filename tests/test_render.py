@@ -26,7 +26,7 @@ from ldtk_map_creator.core.render import (
 )
 from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
-from tests.rule_strategies import placeable_village_rules
+from tests.rule_strategies import one_level_rules, placeable_village_rules
 
 FAST = settings(max_examples=30, deadline=None)
 
@@ -290,7 +290,7 @@ def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
 
 def test_example_long_name_at_the_corner_stays_inside() -> None:
     """名稱比區域寬、區域又貼著 level 的角落時，名稱往內推，不跑出 level、不蓋到座標。"""
-    r = Rules(
+    r = one_level_rules(
         0,
         "L",
         (12, 8),
@@ -322,7 +322,7 @@ def test_example_long_name_at_the_corner_stays_inside() -> None:
 
 def test_example_name_does_not_cover_an_entity_on_it() -> None:
     """entity 擺在區域正中央、名稱也寫在那裡時，entity 方塊照樣看得見（RENDER-3）。"""
-    r = Rules(
+    r = one_level_rules(
         0,
         "L",
         (10, 10),
@@ -341,7 +341,7 @@ def test_example_name_does_not_cover_an_entity_on_it() -> None:
 
 def test_example_name_wider_than_the_level() -> None:
     """名稱比 level 寬：縮小字寫得下就寫；縮到最小還放不下就不寫，不跑出 level。"""
-    r = Rules(
+    r = one_level_rules(
         0,
         "L",
         (2, 1),
@@ -367,7 +367,7 @@ def test_example_name_wider_than_the_level() -> None:
 
 def test_example_neighbour_names_do_not_overlap() -> None:
     """兩個相鄰的小區域、名稱都比區域寬：後擺的縮小字或不寫，不疊在先擺的上面。"""
-    r = Rules(
+    r = one_level_rules(
         0,
         "L",
         (6, 3),

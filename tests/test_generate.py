@@ -25,7 +25,7 @@ from ldtk_map_creator.core.rules import (
 )
 from ldtk_map_creator.core.scene import load_scene, save_scene
 from tests.ldtk_schema import level_file_errors, load_json, project_errors
-from tests.rule_strategies import placeable_village_rules, rules, village_rules
+from tests.rule_strategies import one_level_rules, placeable_village_rules, rules, village_rules
 
 FAST = settings(max_examples=150, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
@@ -127,6 +127,17 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
 
     for area in r.areas:
         assert placed.anchors[f"{area.name}.center"] in placed.cells[area.name]
+        # 四邊的錨點在區域自己的格裡、貼著那一邊（D-010）
+        bx, by, bw, bh = _bbox(placed.cells[area.name])
+        edge = {
+            "north": (1, by),
+            "south": (1, by + bh - 1),
+            "west": (0, bx),
+            "east": (0, bx + bw - 1),
+        }
+        for side, (axis, line) in edge.items():
+            anchor = placed.anchors[f"{area.name}.{side}"]
+            assert anchor in placed.cells[area.name] and anchor[axis] == line, (area.name, side)
     for path in r.paths:
         cells = placed.cells[path.name]
         start, end = placed.anchors[f"{path.name}.start"], placed.anchors[f"{path.name}.end"]
@@ -301,7 +312,7 @@ gap = 3
 def test_example_edge_path_from_l_shaped_path() -> None:
     """曾經壞過的地方：從 L 形路徑通到邊的路，要從路實際佔的格接出去，不是從外框。"""
     for seed in range(10):  # L 形先橫或先直由亂數決定，兩種都要走到
-        r = Rules(
+        r = one_level_rules(
             seed,
             "L",
             (20, 20),
@@ -319,7 +330,7 @@ def test_example_edge_path_from_l_shaped_path() -> None:
 
 
 def _two_areas(seed: int, a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> Rules:
-    return Rules(
+    return one_level_rules(
         seed,
         "L",
         (20, 20),
@@ -353,7 +364,7 @@ def test_example_link_path_tries_the_other_shape() -> None:
 
 def test_example_unparsed_cycle_is_scene_error() -> None:
     """沒經過規則檔檢查、直接組出來的成環規則，也丟 SceneError，不丟 StopIteration。"""
-    r = Rules(
+    r = one_level_rules(
         1,
         "L",
         (10, 10),
@@ -447,3 +458,10 @@ def test_example_unparsed_rules_raise_scene_error(change: str, where: str) -> No
         r = dataclasses.replace(base, areas=(*base.areas, lost))
     with pytest.raises(SceneError, match=where):
         layout(r)
+
+
+def test_example_multi_level_generation_not_yet(tmp_path: Path) -> None:
+    """多個 level 的生成還沒做（#36）：講清楚，不默默只生成第一個 level。"""
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    with pytest.raises(SceneError, match="#36"):
+        generate_scene(r, tmp_path / "scene.ldtk")

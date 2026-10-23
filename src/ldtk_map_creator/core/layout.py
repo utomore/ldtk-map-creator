@@ -57,6 +57,15 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
 
 def layout(rules: Rules) -> Layout:
     """照規則排出每個元素；排不下丟 SceneError。"""
+    # 多個 level、entity 類型與傳送點的配置還沒做（#36、#37）；先講清楚，不默默只做一半
+    if len(rules.levels) > 1:
+        raise SceneError(f"level.{rules.levels[1].name}.name：多個 level 的生成還不支援（#36）")
+    if rules.entity_types:
+        raise SceneError(
+            f"entity_types.{rules.entity_types[0].name}：entity 類型的生成還不支援（#36）"
+        )
+    if rules.portals:
+        raise SceneError(f"{rules.portals[0].name}.from：傳送點的生成還不支援（#37）")
     grid = _Grid(*rules.level_size)
     anchors: dict[str, Cell] = {}
     pushed_by: dict[str, frozenset[str]] = {}
@@ -65,7 +74,7 @@ def layout(rules: Rules) -> Layout:
         if isinstance(element, AreaRule):
             rect, pushed = _place_area(element, grid, rng)
             cells = _rect_cells(rect)
-            anchors[f"{element.name}.center"] = _center(rect)
+            anchors |= _area_anchors(element.name, rect)
             grid.areas.add(element.name)
         else:
             cells, start, end, pushed = _place_path(element, grid, rng)
@@ -122,6 +131,18 @@ class _Grid:
 def _rect_cells(rect: Rect) -> frozenset[Cell]:
     x, y, w, h = rect
     return frozenset((cx, cy) for cy in range(y, y + h) for cx in range(x, x + w))
+
+
+def _area_anchors(name: str, rect: Rect) -> dict[str, Cell]:
+    """區域的錨點：正中央，加上四邊在區域自己的格裡、那一邊的正中央（D-010）。"""
+    x, y, w, h = rect
+    return {
+        f"{name}.center": _center(rect),
+        f"{name}.north": (x + w // 2, y),
+        f"{name}.south": (x + w // 2, y + h - 1),
+        f"{name}.west": (x, y + h // 2),
+        f"{name}.east": (x + w - 1, y + h // 2),
+    }
 
 
 def _center(rect: Rect) -> Cell:
