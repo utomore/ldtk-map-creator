@@ -48,7 +48,7 @@ class Layout:
     pushed_by: dict[str, frozenset[str]]
     # 每個 level 在世界上的位置與大小（格），照規則檔的順序
     levels: dict[str, Rect]
-    # 每個元素（區域、路徑、entity）在哪個 level
+    # 每個區域、路徑、entity 在哪個 level（傳送點兩端各在哪裡見 portals）
     level_of: dict[str, str]
     # 每個傳送點兩端各在哪個 level、哪一格：（from 那端, to 那端）
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]]
@@ -136,7 +136,6 @@ def layout(rules: Rules) -> Layout:
             taken[spot] = f"{portal.name}.{field}"
             ends.append(spot)
         portals[portal.name] = (ends[0], ends[1])
-        pushed_by[portal.name] = frozenset()
     return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals)
 
 

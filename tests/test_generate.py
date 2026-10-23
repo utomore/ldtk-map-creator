@@ -13,7 +13,7 @@ from ldtk_map_creator.core import template
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
-from ldtk_map_creator.core.model import Project
+from ldtk_map_creator.core.model import EntityDef, Project
 from ldtk_map_creator.core.rules import (
     SIDES,
     AreaRule,
@@ -647,9 +647,21 @@ def test_gen_8_portals_link_both_ends(r: Rules) -> None:
                 spots.append((level["identifier"], tuple(e["__grid"])))
     assert len(set(spots)) == len(spots)  # 同一個 level 裡沒有兩個 entity 在同一格
     level_iids = {lv["identifier"]: lv["iid"] for lv in loaded.project["levels"]}
+    areas = {a.name: a for a in r.areas}
+
+    def anchor_spot(anchor: str) -> tuple[str, tuple[int, int]]:
+        """錨點在哪個 level、哪一格，獨立於配置器另算（區域的格加上錨點的算式）。"""
+        owner, _, which = anchor.partition(".")
+        x, y, w, h = _bbox(placed.cells[owner])
+        dx = {"west": 0, "east": w - 1}.get(which, w // 2)
+        dy = {"north": 0, "south": h - 1}.get(which, h // 2)
+        return r.level_of(areas[owner]).name, (x + dx, y + dy)
+
     for portal in r.portals:
         start, end = portal_iids(r.seed, portal.name)
         (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
+        assert (from_level, from_cell) == anchor_spot(portal.start)
+        assert (to_level, to_cell) == anchor_spot(portal.to)
         assert where[start][:2] == (from_level, from_cell)  # 擺在錨點上
         assert where[end][:2] == (to_level, to_cell)
         assert (from_level, from_cell) != (to_level, to_cell)  # 兩端不在同一格
@@ -680,3 +692,29 @@ def test_example_portal_on_one_cell_road_is_refused() -> None:
     assert placed_road["road.start"] == placed_road["road.end"]
     with pytest.raises(SceneError, match=r"^p\.to："):
         layout(r)
+
+
+def test_example_portal_hits_max_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """傳送點類型有數量上限時，第二端擺不下要說清楚，不悄悄挪走第一端。"""
+    original = template.entity_def
+
+    def limited() -> EntityDef:
+        found = original()
+        found["maxCount"], found["limitBehavior"] = 1, "MoveLastOne"
+        return found
+
+    monkeypatch.setattr(template, "entity_def", limited)
+    r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
+    r = dataclasses.replace(r, levels=(r.levels[0],), areas=r.areas[:2])
+    door = PortalRule("door", "Portal", "house_1.south", "plaza.north")
+    r = dataclasses.replace(r, portals=(door,))
+    with pytest.raises(SceneError, match=r"^door\.to：.*上限"):
+        generate_scene(r, tmp_path / "scene.ldtk")
+
+
+def test_example_portal_type_checked_before_placing(tmp_path: Path) -> None:
+    """直接組出來的傳送點類型不對（例如 Spawn）：擺任何東西之前就報錯。"""
+    r = load_rules(EXAMPLE)
+    door = PortalRule("door", "Spawn", "plaza.north", "plaza.south")
+    with pytest.raises(SceneError, match=r"^door\.type："):
+        generate_scene(dataclasses.replace(r, portals=(door,)), tmp_path / "scene.ldtk")

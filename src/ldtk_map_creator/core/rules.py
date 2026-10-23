@@ -335,15 +335,24 @@ def _portal(raw: object, where: str, types: tuple[EntityType, ...]) -> PortalRul
     else:
         found = "、".join(t.name for t in with_refs) or "沒有"
         raise SceneError(f"{name}.type：帶 EntityRef 欄位的類型有 {found}，要寫用哪一種")
+    portal_ref_field(types, name, portal_type)
+    return PortalRule(name, portal_type, start, to)
+
+
+def portal_ref_field(types: tuple[EntityType, ...], portal: str, portal_type: str) -> str:
+    """傳送點用哪個欄位互指：類型要宣告過、剛好一個 EntityRef 欄位（D-010）。
+
+    讀規則檔與生成共用；不合規定丟 SceneError，訊息開頭是 `<傳送點>.type`。
+    """
     declared = next((t for t in types if t.name == portal_type), None)
     if declared is None:
-        raise SceneError(f"{name}.type：[entity_types] 裡沒有 {portal_type}")
-    count = len(declared.ref_fields())
-    if count != 1:
+        raise SceneError(f"{portal}.type：[entity_types] 裡沒有 {portal_type}")
+    refs = declared.ref_fields()
+    if len(refs) != 1:
         raise SceneError(
-            f"{name}.type：{portal_type} 要剛好一個 EntityRef 欄位才能互指，現在有 {count} 個"
+            f"{portal}.type：{portal_type} 要剛好一個 EntityRef 欄位才能互指，現在有 {len(refs)} 個"
         )
-    return PortalRule(name, portal_type, start, to)
+    return refs[0]
 
 
 def _entity_types(raw: object) -> tuple[EntityType, ...]:

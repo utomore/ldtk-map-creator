@@ -134,8 +134,10 @@ def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, 
         elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
         elements[name] = _digest([placed.level_of[name], [cell]])
-    for name, ends in placed.portals.items():
-        elements[name] = _digest([[level, list(cell)] for level, cell in ends])
+    portals = {
+        name: _digest([[level, [cell]] for level, cell in ends])
+        for name, ends in placed.portals.items()
+    }
     levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}
     by_level: dict[str, list[list[object]]] = {name: [] for name in placed.levels}
     for name, x, y in name_positions(placed, areas):
@@ -145,6 +147,7 @@ def make_record(target: SceneMap, placed: Layout, areas: set[str]) -> dict[str, 
         "content": content(target),
         "elements": elements,
         "levels": levels,
+        "portals": portals,
         "labels": by_level,
     }
 
@@ -306,7 +309,7 @@ def comparable(saved: dict[str, Any], current: Content) -> Content:
 def moved(
     old: dict[str, Any] | None, new: dict[str, Any], key: str = "elements"
 ) -> tuple[list[str], list[str], list[str]]:
-    """跟上次生成比：（位置變了的、新的、不見的）名稱；`key` 是 "elements" 或 "levels"。
+    """跟上次生成比：（位置變了的、新的、不見的）名稱；`key` 是 "elements"、"levels" 或 "portals"。
 
     舊版紀錄的位置寫法不同，不比（當成沒有上次）。
     """

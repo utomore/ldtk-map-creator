@@ -12,7 +12,7 @@ from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
 from .model import Level
-from .rules import Rules
+from .rules import Rules, portal_ref_field
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -95,25 +95,24 @@ def generate_scene(
             raise SceneError(f"{entity.name}.type：{entity.type} 的數量到上限了")
         instance["iid"] = element_iid(rules.seed, entity.name)
 
-    # 傳送點：兩端各擺一個，都擺好之後再用類型唯一的 EntityRef 欄位互指（D-010）
-    types = {t.name: t for t in rules.entity_types}
+    # 傳送點：兩端各擺一個，用類型唯一的 EntityRef 欄位互指（D-010）
     for portal in rules.portals:
+        ref = portal_ref_field(rules.entity_types, portal.name, portal.type)  # 先檢查再擺
         ends = placed.portals[portal.name]
         iids = portal_iids(rules.seed, portal.name)
-        for field, (level_name, (x, y)), iid in zip(("from", "to"), ends, iids, strict=True):
+        for i, (field, (level_name, (x, y))) in enumerate(zip(("from", "to"), ends, strict=True)):
+            layer = entity_layers[level_name]
+            before = len(layer["entityInstances"])
+            # 第二端擺的時候第一端已經在了，直接帶上指向它的值
+            values: dict[str, object] | None = {ref: iids[0]} if i == 1 else None
             try:
-                instance = place_entity(scene, level_name, portal.type, x=x, y=y)
+                instance = place_entity(scene, level_name, portal.type, x=x, y=y, values=values)
             except SceneError as error:
                 raise SceneError(f"{portal.name}.{field}：{error}") from error
-            instance["iid"] = iid
-        refs = types[portal.type].ref_fields() if portal.type in types else []
-        if len(refs) != 1:  # 讀規則檔時擋過；直接組出來的規則照樣報成 SceneError
-            raise SceneError(
-                f"{portal.name}.type：{portal.type} 要是宣告過、剛好一個 EntityRef 欄位的類型"
-            )
-        ref = refs[0]
+            if len(layer["entityInstances"]) != before + 1:
+                raise SceneError(f"{portal.name}.{field}：{portal.type} 的數量到上限了")
+            instance["iid"] = iids[i]
         set_entity_fields(scene, iids[0], {ref: iids[1]})
-        set_entity_fields(scene, iids[1], {ref: iids[0]})
 
     project["iid"] = derived_iid(rules.seed, "project")
     project["dummyWorldIid"] = derived_iid(rules.seed, "world")

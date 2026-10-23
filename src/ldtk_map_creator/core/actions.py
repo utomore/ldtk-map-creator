@@ -513,9 +513,10 @@ def _load_current(path: Path, force: bool) -> SceneMap | None:
 
 
 def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[str, Any]) -> str:
-    elements = record.moved(previous, new)
+    plain, portals = record.moved(previous, new), record.moved(previous, new, "portals")
+    elements = tuple(sorted(a + b) for a, b in zip(plain, portals, strict=True))
     moved_levels = record.moved(previous, new, "levels")
-    count = len(new["elements"])
+    count = len(new["elements"]) + len(new.get("portals", {}))
     levels = "、".join(f"{lv.name}（{lv.size[0]}x{lv.size[1]} 格）" for lv in rules.levels)
     lines = [f"照規則生成 {levels}，{count} 個元素"]
     if previous is None:
