@@ -28,6 +28,7 @@ decision-makers: [utomore]
   - `<名>.ldtk`：主檔。
   - `<名>/`：子資料夾，每個 level 一個 `.ldtkl`，拆開存時才有。
   - `<名>.rules.toml`：規則檔，含 seed。
+  - `<名>.generated.json`：生成紀錄，記下上次生成的結果，重新生成前拿來比對（D-008）；從規則生成過才有。
   - `previews/<名>/`：每個 level 一張 `<level>.png`，加一張世界總覽；多個場景地圖放同一個資料夾時不會撞名。
 - 兩種存法都支援：讀 `externalLevels` 決定怎麼寫；新建場景地圖時預設拆開。
 - 這個 repo 只放工具本身與範例場景地圖。

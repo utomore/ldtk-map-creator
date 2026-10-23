@@ -1,9 +1,13 @@
 """產生合法規則檔的 hypothesis 策略，以及把規則資料轉回 TOML 讀出的樣子。"""
 
-from typing import Any
+import json
+from dataclasses import replace
+from typing import Any, cast
 
 from hypothesis import strategies as st
 
+from ldtk_map_creator.core.errors import SceneError
+from ldtk_map_creator.core.layout import layout
 from ldtk_map_creator.core.rules import (
     AREA_ANCHORS,
     DEFAULT_GAP,
@@ -183,3 +187,69 @@ def village_rules(draw: st.DrawFn) -> Rules:
     return Rules(
         seed, "Village", (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
     )
+
+
+def _without(r: Rules, name: str) -> Rules:
+    """拿掉一個元素，連同直接或間接指向它的元素與錨點在它上面的 entity。"""
+    gone = {name}
+    changed = True
+    while changed:
+        changed = False
+        for e in (*r.areas, *r.paths):
+            refs = {e.near} if isinstance(e, AreaRule) else {e.start, e.to}
+            if e.name not in gone and refs & gone:
+                gone.add(e.name)
+                changed = True
+    keep_entity = [
+        e
+        for e in r.entities
+        if e.name not in gone and not (isinstance(e.at, str) and e.at.split(".")[0] in gone)
+    ]
+    return replace(
+        r,
+        areas=tuple(a for a in r.areas if a.name not in gone),
+        paths=tuple(p for p in r.paths if p.name not in gone),
+        entities=tuple(keep_entity),
+    )
+
+
+@st.composite
+def placeable_village_rules(draw: st.DrawFn) -> Rules:
+    """排得下的村莊規則：排不下就拿掉出錯的元素再試，不靠 assume 篩掉，免得篩掉太多。"""
+    r = draw(village_rules())
+    while True:
+        try:
+            layout(r)
+        except SceneError as error:
+            name = str(error).split("：", 1)[0].split(".", 1)[0]
+            smaller = _without(r, name)
+            if smaller == r:  # 訊息沒點名元素：不是排不下，是策略或配置器的錯
+                raise
+            r = smaller
+            continue
+        return r
+
+
+def to_toml_text(r: Rules) -> str:
+    """規則資料寫成規則檔的文字；只處理 to_toml_data 會產生的形狀。"""
+
+    def value(v: object) -> str:
+        if isinstance(v, str):
+            return json.dumps(v, ensure_ascii=False)  # 簡單字串的 JSON 寫法也是合法的 TOML
+        if isinstance(v, list):
+            return "[" + ", ".join(value(x) for x in cast(list[object], v)) + "]"
+        if isinstance(v, dict):
+            items = cast(dict[str, object], v).items()
+            return "{ " + ", ".join(f"{k} = {value(x)}" for k, x in items) + " }"
+        return str(v)
+
+    data = to_toml_data(r)
+    lines = [f"seed = {data['seed']}", "[level]"]
+    lines += [f"{k} = {value(v)}" for k, v in data["level"].items()]
+    lines.append("[kinds]")
+    lines += [f"{k} = {value(v)}" for k, v in data["kinds"].items()]
+    for key in ("area", "path", "entity"):
+        for item in data.get(key, []):
+            lines.append(f"[[{key}]]")
+            lines += [f"{k} = {value(v)}" for k, v in item.items()]
+    return "\n".join(lines) + "\n"

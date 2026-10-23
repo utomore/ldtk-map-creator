@@ -25,12 +25,14 @@ from ldtk_map_creator.core.rules import (
 )
 from ldtk_map_creator.core.scene import load_scene, save_scene
 from tests.ldtk_schema import level_file_errors, load_json, project_errors
-from tests.rule_strategies import rules, village_rules
+from tests.rule_strategies import placeable_village_rules, rules, village_rules
 
 FAST = settings(max_examples=150, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
 # 通用的規則偏稀疏；混進像村莊的規則，才常有靠近別人、被擠開的區域
 spawn_rules = village_rules() | rules(entity_types=st.just("Spawn"), max_area=6)
+# 大多排得下的規則：GEN-3 以外的 law 只看排得下的情況，篩掉太多會讓 hypothesis 放棄
+fitting_rules = placeable_village_rules() | rules(entity_types=st.just("Spawn"), max_area=6)
 STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 # 區域在對象的哪一邊，就往反方向推才碰得到對象
 DIRECTIONS = {"north": (0, 1), "south": (0, -1), "west": (1, 0), "east": (-1, 0)}
@@ -55,7 +57,7 @@ def _files(folder: Path) -> dict[str, bytes]:
 
 @pytest.mark.law("GEN-1")
 @FAST
-@given(spawn_rules, st.booleans())
+@given(fitting_rules, st.booleans())
 def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
     assume(_try_layout(r) is not None)
     written: list[dict[str, bytes]] = []
@@ -73,7 +75,7 @@ def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
 
 @pytest.mark.law("GEN-2")
 @FAST
-@given(spawn_rules)
+@given(fitting_rules)
 def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     placed = _try_layout(r)
     assume(placed is not None)
@@ -240,7 +242,7 @@ def test_gen_4_changing_an_area_only_moves_what_it_touches(
 
 @pytest.mark.law("FILE-1")
 @settings(max_examples=40, deadline=None)
-@given(spawn_rules, st.booleans())
+@given(fitting_rules, st.booleans())
 def test_file_1_generated_scene_matches_schema(r: Rules, split: bool) -> None:
     """FILE-1 的定義域擴到生成的場景地圖：生成會改 IntGrid 定義與 iid，範本測不到。"""
     assume(_try_layout(r) is not None)

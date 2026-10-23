@@ -20,10 +20,15 @@ def element_iid(seed: int, name: str) -> str:
     return derived_iid(seed, f"element:{name}")
 
 
-def generate_scene(rules: Rules, path: Path, *, split: bool = True) -> tuple[SceneMap, Layout]:
-    """照規則建一個新的場景地圖（還沒寫檔），回傳場景地圖與配置結果。"""
+def generate_scene(
+    rules: Rules, path: Path, *, split: bool = True, overwrite: bool = False
+) -> tuple[SceneMap, Layout]:
+    """照規則建一個新的場景地圖（還沒寫檔），回傳場景地圖與配置結果。
+
+    `overwrite=True` 時磁碟上已經有這個場景地圖也照樣建，寫檔時蓋掉（重新生成）。
+    """
     placed = layout(rules)
-    scene = new_scene(path, split=split)
+    scene = new_scene(path, split=split, overwrite=overwrite)
     project = scene.project
     for layer_type in ("IntGrid", "Entities"):
         found = [d for d in project["defs"]["layers"] if d["type"] == layer_type]
