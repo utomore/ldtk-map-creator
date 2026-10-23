@@ -9,6 +9,7 @@ import copy
 import math
 from typing import cast
 
+from . import fields
 from .errors import SceneError
 from .ids import new_iid
 from .model import EntityDef, EntityInstance, LayerDef, Level, Project
@@ -35,17 +36,33 @@ def refresh_derived(project: Project, only: Level | None = None) -> None:
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
     tileset_paths = {t["uid"]: t["relPath"] for t in project["defs"]["tilesets"]}
+    # EntityRef 可以跨 level，只重算一個 level 時也要看整個場景地圖
+    where = fields.locations(project)
     for level in project["levels"] if only is None else [only]:
-        _refresh_level(project, level, layer_defs, entity_defs, tileset_paths)
+        _refresh_level(project, level, layer_defs, entity_defs, tileset_paths, where)
         if only is None:
             manual = _manual_layout(project)
             level["__neighbours"] = _neighbours(level, project["levels"]) if manual else []
 
 
-def _assign_ids(project: Project) -> None:
+def _used_uids(project: Project) -> list[int]:
     defs = project["defs"]
     used = [d["uid"] for d in defs["layers"]] + [d["uid"] for d in defs["entities"]]
+    used += [f["uid"] for d in defs["entities"] for f in d["fieldDefs"]]
     used += [t["uid"] for t in defs["tilesets"]] + [lv["uid"] for lv in project["levels"]]
+    return used
+
+
+def allocate_uid(project: Project) -> int:
+    """配一個沒人用的 uid（新的定義用），並推進 `nextUid`。"""
+    project["nextUid"] = max([project["nextUid"], *(u + 1 for u in _used_uids(project))])
+    uid = project["nextUid"]
+    project["nextUid"] += 1
+    return uid
+
+
+def _assign_ids(project: Project) -> None:
+    used = _used_uids(project)
     project["nextUid"] = max([project["nextUid"], *(u + 1 for u in used)])
     for level in project["levels"]:
         if level["uid"] == UNASSIGNED_UID:
@@ -71,6 +88,7 @@ def _refresh_level(
     layer_defs: dict[int, LayerDef],
     entity_defs: dict[int, EntityDef],
     tileset_paths: dict[int, str | None],
+    where: fields.Locations,
 ) -> None:
     level["__bgColor"] = level_bg_color(project, level)
     layers = level["layerInstances"]
@@ -113,6 +131,7 @@ def _refresh_level(
             entity["__pivot"] = [edef["pivotX"], edef["pivotY"]]
             entity["__tags"] = list(edef["tags"])
             entity["__smartColor"] = edef["color"]
+            fields.refresh_fields(project, entity, edef, where)
             # LDtk 的 smart tile 先看 Tile 欄位、再看定義的 tileRect；
             # 有 Tile 欄位的 entity 保留 LDtk 算好的值，其餘照定義
             if not _has_tile_field(entity):

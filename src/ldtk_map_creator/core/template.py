@@ -7,13 +7,36 @@ from importlib import resources
 from typing import cast
 
 from .errors import SceneError
-from .model import EntityInstance, LayerInstance, Level, Project
+from .model import EntityDef, EntityInstance, FieldDef, LayerInstance, Level, Project
 
 
 @cache
 def _cached() -> Project:
     text = resources.files(__package__).joinpath("templates", "single.ldtk").read_text("utf-8")
     return cast(Project, json.loads(text))
+
+
+@cache
+def _fields() -> Project:
+    """LDtk 1.5.3 存的欄位範本：一個 Portal 定義，帶 Int、Float、Bool、String、EntityRef 欄位。"""
+    text = resources.files(__package__).joinpath("templates", "fields.ldtk").read_text("utf-8")
+    return cast(Project, json.loads(text))
+
+
+def field_def(field_type: str) -> FieldDef:
+    """某個型別的欄位定義的複本；identifier 與 uid 由呼叫端填。"""
+    for edef in _fields()["defs"]["entities"]:
+        for fdef in edef["fieldDefs"]:
+            if fdef["__type"] == field_type:
+                return copy.deepcopy(fdef)
+    raise SceneError(f"欄位範本裡沒有 {field_type} 型別")
+
+
+def entity_def() -> EntityDef:
+    """範本 entity 定義（Spawn）的複本，不帶欄位；identifier、uid、顏色、大小由呼叫端填。"""
+    found = copy.deepcopy(_cached()["defs"]["entities"][0])
+    found["fieldDefs"] = []
+    return found
 
 
 def project() -> Project:

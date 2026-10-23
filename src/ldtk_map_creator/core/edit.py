@@ -4,11 +4,15 @@
 每個操作先檢查完才動資料；後面的 refresh 失敗時還原，場景地圖不變。
 """
 
-from . import template
-from .derived import cell_count, cell_to_px, refresh_derived
+import re
+
+from . import fields, template
+from .derived import allocate_uid, cell_count, cell_to_px, refresh_derived
 from .errors import SceneError
 from .model import EntityDef, EntityInstance, LayerDef, LayerInstance, Level, Project
-from .scene import SceneMap
+from .scene import IDENTIFIER, SceneMap
+
+_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
 def _layer(project: Project, level: Level, layer: str | None, layer_type: str) -> LayerInstance:
@@ -190,8 +194,11 @@ def place_entity(
     x: int,
     y: int,
     layer: str | None = None,
+    values: dict[str, object] | None = None,
 ) -> EntityInstance:
     """在 (x, y) 格擺一個 entity，回傳它（`iid` 已配發）。
+
+    `values` 是欄位值（欄位名稱 → 值）；沒給的欄位用預設值。
 
     到了定義的 maxCount 時照 limitBehavior：MoveLastOne 把最後一個移過來、
     DiscardOldOnes 丟掉最舊的、PreventAdding 拒絕。
@@ -201,8 +208,7 @@ def place_entity(
     grid, width, height = _grid_size(scene.project, level, target)
     _check_inside(width, height, [(x, y)], level)
     edef = _entity_def_by_name(scene.project, entity)
-    if edef["fieldDefs"]:
-        raise SceneError(f"entity {entity} 有欄位定義；帶欄位的 entity 還不支援")
+    _check_values(scene.project, edef, values or {})
     _check_toc(edef)
     _check_tags(scene.project, target, edef)
     refresh_derived(scene.project, only=level)  # 先確定這個 level 本身沒問題，才動資料
@@ -228,10 +234,90 @@ def place_entity(
     instance["width"] = edef["width"]
     instance["height"] = edef["height"]
     instance["px"] = px
-    instance["fieldInstances"] = []
+    instance["fieldInstances"] = [fields.new_instance(f) for f in edef["fieldDefs"]]
+    _write_values(edef, instance, values or {})
     target["entityInstances"].append(instance)
     refresh_derived(scene.project, only=level)
     return instance
+
+
+def _check_values(project: Project, edef: EntityDef, values: dict[str, object]) -> None:
+    """欄位名稱都存在、值的型別都對；先檢查完才動資料。"""
+    by_name = {f["identifier"]: f for f in edef["fieldDefs"]}
+    where = fields.locations(project)
+    for name, value in values.items():
+        fdef = by_name.get(name)
+        if fdef is None:
+            raise SceneError(f"entity {edef['identifier']} 沒有欄位 {name}；有的：{list(by_name)}")
+        fields.check_value(fdef, value, where)
+
+
+def _write_values(edef: EntityDef, entity: EntityInstance, values: dict[str, object]) -> None:
+    by_name = {f["identifier"]: f for f in edef["fieldDefs"]}
+    by_uid = {f["defUid"]: f for f in entity["fieldInstances"]}
+    for name, value in values.items():
+        fdef = by_name[name]
+        instance = by_uid.get(fdef["uid"])
+        if instance is None:
+            instance = fields.new_instance(fdef)
+            entity["fieldInstances"].append(instance)
+        fields.set_value(instance, fdef, value)
+
+
+def set_entity_fields(scene: SceneMap, iid: str, values: dict[str, object]) -> EntityInstance:
+    """設定一個 entity 的欄位值（欄位名稱 → 值；None 是清空）；回傳那個 entity。"""
+    level, _, entity = find_entity(scene, iid)
+    edef = _entity_def_by_uid(scene.project, entity["defUid"])
+    _check_values(scene.project, edef, values)
+    _check_toc(edef)
+    _write_values(edef, entity, values)
+    refresh_derived(scene.project, only=level)
+    return entity
+
+
+def add_entity_def(
+    scene: SceneMap,
+    identifier: str,
+    *,
+    color: str = "#BE4A2F",
+    width: int = 16,
+    height: int = 16,
+    field_types: dict[str, str] | None = None,
+) -> EntityDef:
+    """新增一個 entity 定義。
+
+    `field_types` 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
+    """
+    project = scene.project
+    if not IDENTIFIER.fullmatch(identifier):
+        raise SceneError(f"entity 名稱只能用英數字與底線，且不以數字開頭：{identifier}")
+    if any(d["identifier"].lower() == identifier.lower() for d in project["defs"]["entities"]):
+        raise SceneError(f"已經有同名的 entity 定義（不分大小寫）：{identifier}")
+    if not _COLOR.fullmatch(color):
+        raise SceneError(f'顏色要是 "#RRGGBB"：{color!r}')
+    if width < 1 or height < 1:
+        raise SceneError(f"entity 尺寸至少 1 像素：{width}x{height}")
+    wanted = field_types or {}
+    for name, kind in wanted.items():
+        if not IDENTIFIER.fullmatch(name):
+            raise SceneError(f"欄位名稱只能用英數字與底線，且不以數字開頭：{name}")
+        if kind not in fields.FIELD_TYPES:
+            raise SceneError(f"欄位 {name} 的型別要是 {'、'.join(fields.FIELD_TYPES)}：{kind}")
+    if len({n.lower() for n in wanted}) != len(wanted):
+        raise SceneError(f"欄位名稱重複（不分大小寫）：{list(wanted)}")
+    edef = template.entity_def()
+    edef["identifier"] = identifier
+    edef["uid"] = allocate_uid(project)
+    edef["color"] = color
+    edef["width"] = width
+    edef["height"] = height
+    for name, kind in wanted.items():
+        fdef = template.field_def(kind)
+        fdef["identifier"] = name
+        fdef["uid"] = allocate_uid(project)
+        edef["fieldDefs"].append(fdef)
+    project["defs"]["entities"].append(edef)
+    return edef
 
 
 def find_entity(scene: SceneMap, iid: str) -> tuple[Level, LayerInstance, EntityInstance]:
@@ -262,4 +348,5 @@ def delete_entity(scene: SceneMap, iid: str) -> Level:
     level, layer, entity = find_entity(scene, iid)
     _check_toc(_entity_def_by_uid(scene.project, entity["defUid"]))
     layer["entityInstances"].remove(entity)
+    fields.clear_refs_to(scene.project, iid)  # 指向它的 EntityRef 一起清掉，跟 LDtk 一樣
     return level
