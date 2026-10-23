@@ -3,6 +3,7 @@
 import copy
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 from hypothesis import given, settings
@@ -17,6 +18,7 @@ from ldtk_map_creator.core.edit import (
     read_cell,
 )
 from ldtk_map_creator.core.errors import SceneError
+from ldtk_map_creator.core.model import FieldInstance
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 
 FAST = settings(max_examples=60, deadline=None)
@@ -159,14 +161,6 @@ def test_example_paint_names_layer_when_ambiguous(tmp_path: Path) -> None:
     assert paint_rect(scene, "Two", x=0, y=0, value=1, layer="Height") == 1
 
 
-def test_example_entity_with_fields_is_refused(tmp_path: Path) -> None:
-    """還不支援：有欄位定義的 entity 先拒絕，不寫出 LDtk 讀不懂的欄位。"""
-    scene = _scene(tmp_path, 4, 4)
-    scene.project["defs"]["entities"][0]["fieldDefs"].append({"identifier": "target"})
-    with pytest.raises(SceneError):
-        place_entity(scene, "Room", "Spawn", x=0, y=0)
-
-
 def test_example_read_cell(tmp_path: Path) -> None:
     """典型與邊界：讀回畫上去的值；出界丟 SceneError。"""
     scene = _scene(tmp_path, 4, 3)
@@ -283,7 +277,8 @@ def test_example_tile_field_keeps_ldtk_tile(tmp_path: Path) -> None:
     scene = _scene(tmp_path, 4, 4)
     entity = place_entity(scene, "Room", "Spawn", x=0, y=0)
     rect = {"tilesetUid": 7, "x": 32, "y": 0, "w": 16, "h": 16}
-    entity["fieldInstances"].append({"__type": "Tile", "__value": rect})
+    # LDtk 寫的 Tile 欄位，這裡不管的型別；只放測試要的幾個鍵
+    entity["fieldInstances"].append(cast(FieldInstance, {"__type": "Tile", "__value": rect}))
     entity["__tile"] = rect
     save_scene(scene)
     assert entity["__tile"] == rect

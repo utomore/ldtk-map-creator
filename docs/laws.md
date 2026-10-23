@@ -22,7 +22,7 @@
 ## FILE：讀寫檔
 
 - **FILE-1**：repo 裡的範本，以及工具寫出的每個場景地圖檔，都通過官方 LDtk 1.5.3 JSON schema；`.ldtkl` 去掉 LDtk 自己加的 `__header__` 後，以 schema 的 `Level` 驗證。
-- **FILE-2**：寫出再讀回的場景地圖裡，圖層定義、entity 定義、level 的 `uid` 互不重複，而且都小於 `nextUid`；所有 `iid` 互不重複。
+- **FILE-2**：寫出再讀回的場景地圖裡，圖層定義、entity 定義、欄位定義、level 的 `uid` 互不重複，而且都小於 `nextUid`；所有 `iid` 互不重複。
 - **FILE-3**：讀進來、寫回去、再讀一次，內容跟寫之前完全相同，包括範本裡程式沒宣告的欄位。
 - **FILE-4**：寫出的每個 IntGrid 圖層，`__cWid` 等於 `ceil(pxWid / gridSize)`、`__cHei` 同理，`intGridCsv` 長度等於 `__cWid × __cHei`。
 - **FILE-5**：拆開存時，主檔每個 level 的 `layerInstances` 是 `null`、`externalRelPath` 指向存在的 `.ldtkl`；子資料夾裡沒有對不上 level 的 `.ldtkl`；單檔存時，子資料夾裡沒有任何 `.ldtkl`。
@@ -35,6 +35,8 @@
 - **SCENE-3**：超出 level 範圍的畫格、擺放、移動會被拒絕，場景地圖不變。
 - **SCENE-4**：擺放或移動到 (x, y) 格的 entity，寫出再讀回後 `__grid` 是 [x, y]，不論 pivot；刪除後它的 iid 不在場景地圖裡。
 - **SCENE-5**：每個會改動場景地圖的操作完成後，磁碟上的場景地圖重新讀進來就是操作後的狀態，那個 level 的預覽圖等於重新 render 的結果；操作失敗時，磁碟上的檔不變。
+- **SCENE-6**：擺放、設定欄位、移動、刪除 entity 之後寫出再讀回，每個 entity 的欄位實例跟它的定義一一對應（順序、名稱、型別）；`__value` 是設定的值，沒設的是預設值；EntityRef 的 `__value` 指向的圖層與 level 就是目標實際所在的位置，可以跨 level。
+- **SCENE-7**：刪掉一個 entity 之後，沒有 EntityRef 指向它；欄位不存在、型別不對、不能是空的卻給空值、EntityRef 指向不存在的 entity，都會被拒絕，場景地圖不變。
 
 ## ENTRY：入口
 

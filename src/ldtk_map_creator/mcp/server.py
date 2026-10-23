@@ -5,6 +5,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -100,10 +101,20 @@ def paint_cells(
 
 @server.tool()
 def place_entity(
-    path: str, level: str, entity: str, x: int, y: int, layer: str | None = None
+    path: str,
+    level: str,
+    entity: str,
+    x: int,
+    y: int,
+    layer: str | None = None,
+    values: dict[str, Any] | None = None,
 ) -> Reply:
-    """在 (x, y) 格擺一個 entity（entity 是定義的名稱，例如 Spawn）。"""
-    return _reply(lambda: actions.place_entity(Path(path), level, entity, x=x, y=y, layer=layer))
+    """在 (x, y) 格擺一個 entity（entity 是定義的名稱，例如 Spawn）；values 是欄位值。"""
+    return _reply(
+        lambda: actions.place_entity(
+            Path(path), level, entity, x=x, y=y, layer=layer, values=values
+        )
+    )
 
 
 @server.tool()
@@ -132,6 +143,41 @@ def generate_scene(path: str, force: bool = False) -> Reply:
     force=True 才蓋掉那些改動。
     """
     return _reply(lambda: actions.generate_scene(Path(path), force=force))
+
+
+@server.tool()
+def add_entity_def(
+    path: str,
+    identifier: str,
+    color: str = "#BE4A2F",
+    width: int = 16,
+    height: int = 16,
+    field_types: dict[str, str] | None = None,
+) -> Reply:
+    """新增一個 entity 定義。
+
+    field_types 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
+    有 <名>.rules.toml 的場景地圖不要用這個：改規則檔再 generate_scene（D-008）。
+    """
+    return _reply(
+        lambda: actions.add_entity_def(
+            Path(path),
+            identifier,
+            color=color,
+            width=width,
+            height=height,
+            field_types=field_types,
+        )
+    )
+
+
+@server.tool()
+def set_entity_fields(path: str, iid: str, values: dict[str, Any]) -> Reply:
+    """設定 entity 的欄位值（欄位名稱 → 值；null 是清空）。EntityRef 的值是目標 entity 的 iid。
+
+    有 <名>.rules.toml 的場景地圖不要用這個：改規則檔再 generate_scene（D-008）。
+    """
+    return _reply(lambda: actions.set_entity_fields(Path(path), iid, values))
 
 
 def main() -> None:
