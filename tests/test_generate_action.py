@@ -16,7 +16,12 @@ from PIL import Image
 from ldtk_map_creator.core import actions, record
 from ldtk_map_creator.core.edit import read_cell
 from ldtk_map_creator.core.errors import SceneError
-from ldtk_map_creator.core.render import preview_path, render_level
+from ldtk_map_creator.core.render import (
+    preview_path,
+    render_level,
+    render_world,
+    world_preview_path,
+)
 from ldtk_map_creator.core.rules import Rules
 from ldtk_map_creator.core.scene import load_scene
 from tests.rule_strategies import (
@@ -58,6 +63,9 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
             # 每個 level 的名稱剛好是那個 level 的區域與路徑（不靠紀錄自己對答案）
             here = {e.name for e in (*r.areas, *r.paths) if r.level_of(e).name == level.name}
             assert {n for n, _, _ in record.labels(saved, level.name)} == here, level.name
+        # 世界總覽也跟重新 render 的一樣（SCENE-5）
+        with Image.open(world_preview_path(on_disk)) as image:
+            assert image.tobytes() == render_world(on_disk).tobytes()
         for level in r.levels:  # 每個 level 都有預覽圖，跟重新 render 的一樣
             with Image.open(preview_path(on_disk, level.name)) as image:
                 names = record.labels(saved, level.name)
@@ -447,7 +455,7 @@ def test_example_summary_and_previews_cover_every_level(tmp_path: Path) -> None:
     result = actions.generate_scene(path)  # 規則改了、地圖沒被直接改過：不必 force
     assert "level 新的：House1" in result.summary
     again = actions.generate_scene(path)
-    assert {p.stem for p in again.previews} == {"Village", "House1"}
+    assert {p.stem for p in again.previews} == {"Village", "House1", "world-overview"}
     assert "沒有元素移動" in again.summary
 
 

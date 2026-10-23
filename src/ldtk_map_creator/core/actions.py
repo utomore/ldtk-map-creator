@@ -130,10 +130,17 @@ def _commit(
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
     touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | remove
+    # 世界總覽：每次改動都重畫（D-002）；有好幾個 level 時也回傳給呼叫端看
+    world = rendering.render_world(target) if levels else None
+    touched.add(rendering.world_preview_path(target))
     saved = _snapshot(touched)
     try:
         scene.save_scene(target, levels=set(changed), refreshed=True)
         previews = tuple(rendering.write_preview(target, lv, image) for lv, image in images.items())
+        if world is not None:
+            overview = rendering.write_world_preview(target, world)
+            if len(levels) > 1:
+                previews += (overview,)
         for path, data in extra.items():
             atomic_write(path, data)
         for old in remove:

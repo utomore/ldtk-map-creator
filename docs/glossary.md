@@ -30,4 +30,5 @@
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level`；規則檔裡的是 `LevelRule` |
 | 操作 | 入口直接呼叫的單位：讀場景地圖、做一件事、寫回、更新預覽圖；一個操作對應一個 MCP 工具與一個 CLI 指令。不是 core 裡單純改記憶體的函式 | `core/actions.py` |
 | 預覽圖 | 一個 level render 成的 PNG，存在 `previews/<主檔名>/<level>.png`；不是 LDtk 自己匯出的圖 | `render_level`、`write_preview` |
+| 世界總覽 | 一張 PNG，把場景地圖的每個 level 照世界座標縮小畫在一起，標出 level 名稱、傳送點之間畫線；存在 `previews/<主檔名>/world-overview.png`；不是單一 level 的預覽圖 | `render_world`、`world_preview_path` |
 | 範本 | 用 LDtk 1.5.3 存出的空專案，新的場景地圖與 level 從它複製；不是規則檔 | `core/templates/` |
