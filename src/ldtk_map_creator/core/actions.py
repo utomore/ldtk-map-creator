@@ -95,12 +95,14 @@ def _commit(
     iid: str | None = None,
     extra: dict[Path, bytes] | None = None,
     remove: set[Path] | None = None,
+    generated: dict[str, Any] | None = None,
 ) -> ActionResult:
     """寫回有變的 level 與它們的預覽圖；失敗時還原磁碟上動過的檔。
 
     - `before` 是操作前每個 level（以 iid 為鍵）的複本；None 表示全部都是新的。
     - `primary` 是這次操作的目標 level：就算內容沒變，也一定回傳它的預覽圖。
     - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）；`remove` 是要一起刪的檔。
+    - `generated` 是預覽圖要用的生成紀錄（寫上元素名稱）；None 就讀磁碟上的。
     """
     extra = extra or {}
     remove = remove or set()
@@ -114,7 +116,12 @@ def _commit(
         or _for_render(before.get(lv["iid"])) != _for_render(lv)
         or lv["identifier"] == primary
     ]
-    images = {level_id: rendering.render_level(target, level_id) for level_id in redraw}
+    labels_by_level, note = _names(target, redraw, generated, refreshed=True)
+    summary += note
+    images = {
+        level_id: rendering.render_level(target, level_id, labels=labels_by_level.get(level_id, []))
+        for level_id in redraw
+    }
     folder = target.path.parent / target.path.stem
     names = {lv["identifier"] for lv in levels}
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
@@ -296,8 +303,10 @@ def delete_entity(path: Path, iid: str) -> ActionResult:
 def render_level(path: Path, level: str, *, scale: int = 2) -> ActionResult:
     """重新 render 一個 level 的預覽圖，不改動場景地圖。"""
     target = scene.load_scene(path)
-    image = rendering.render_level(target, level, scale=scale)
-    return ActionResult(f"{level} 的預覽圖", (rendering.write_preview(target, level, image),))
+    names, note = _names(target, [level], None)
+    image = rendering.render_level(target, level, scale=scale, labels=names.get(level, []))
+    preview = rendering.write_preview(target, level, image)
+    return ActionResult(f"{level} 的預覽圖{note}", (preview,))
 
 
 @_serialized
@@ -332,14 +341,50 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                 )
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
-    new_record = record.make_record(target, placed)
+    areas = {a.name for a in rules.areas}
+    new_record = record.make_record(target, placed, rules.level_name, areas)
     summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
     # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
     kept = {lv["identifier"].lower() for lv in target.project["levels"]}
     gone = [lv["identifier"] for lv in current.project["levels"]] if current else []
     remove = {rendering.preview_path(target, lv) for lv in gone if lv.lower() not in kept}
-    return _commit(target, before, summary, rules.level_name, extra=extra, remove=remove)
+    return _commit(
+        target, before, summary, rules.level_name, extra=extra, remove=remove, generated=new_record
+    )
+
+
+def _names(
+    target: SceneMap,
+    levels: list[str],
+    generated: dict[str, Any] | None,
+    *,
+    refreshed: bool = False,
+) -> tuple[dict[str, list[rendering.Label]], str]:
+    """預覽圖要寫的元素名稱，與要補在摘要後面的說明。
+
+    `generated` 是剛生成的紀錄，直接用。沒給就讀磁碟上的紀錄，而且只在地圖跟紀錄一致時才寫：
+    直接改過的地圖，名稱可能已經不在元素上了。讀不了或對不上都不擋操作，只在摘要說一聲。
+    """
+    if generated is None:
+        if not record.record_path(target.path).is_file():
+            return {}, ""
+        try:
+            generated = record.read_record(target.path)
+        except SceneError:
+            return {}, "\n（生成紀錄讀不了，預覽圖沒寫元素名稱）"
+        if generated is None or not any(record.labels(generated, lv) for lv in levels):
+            return {}, ""
+        try:
+            same = record.content(target, refreshed=refreshed) == generated["content"]
+        except SceneError:
+            same = False
+        if not same:
+            return {}, (
+                "\n（地圖跟上次生成的結果不同，預覽圖不寫元素名稱；"
+                "把改動寫進規則檔再重新生成，名稱就會回來）"
+            )
+    return {lv: record.labels(generated, lv) for lv in levels}, ""
 
 
 def _content(current: SceneMap) -> record.Content:

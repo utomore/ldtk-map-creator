@@ -48,7 +48,9 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
         on_disk = load_scene(path)
         assert saved["content"] == record.content(on_disk)
         with Image.open(preview_path(on_disk, r.level_name)) as image:
-            assert image.tobytes() == render_level(on_disk, r.level_name).tobytes()
+            names = record.labels(saved, r.level_name)
+            expected = render_level(on_disk, r.level_name, labels=names)
+            assert image.tobytes() == expected.tobytes()
         before = _files(folder)
         result = actions.generate_scene(path)
         assert _files(folder) == before
@@ -338,3 +340,48 @@ def test_example_force_keeps_leftover_level_files(tmp_path: Path) -> None:
     with pytest.raises(SceneError, match="不覆蓋"):
         actions.generate_scene(path, force=True)
     assert (tmp_path / "village" / "Cave.ldtkl").is_file()
+
+
+def test_example_render_level_keeps_names(tmp_path: Path) -> None:
+    """render_level 操作重畫從規則生成的 level，也寫上元素名稱，跟生成時的預覽圖一樣。"""
+    path = _generated(tmp_path)
+    preview = tmp_path / "previews" / "village" / "Village.png"
+    generated = preview.read_bytes()
+    actions.render_level(path, "Village")
+    assert preview.read_bytes() == generated
+
+
+def test_example_names_only_when_map_matches_record(tmp_path: Path) -> None:
+    """直接改過的地圖不寫元素名稱（名稱可能已經不在元素上），並在摘要說明；改回規則就回來。"""
+    path = _generated(tmp_path)
+    preview = tmp_path / "previews" / "village" / "Village.png"
+    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    assert "不寫元素名稱" in result.summary
+    scene = load_scene(path)
+    with Image.open(preview) as image:
+        assert image.tobytes() == render_level(scene, "Village").tobytes()
+    actions.generate_scene(path, force=True)
+    scene = load_scene(path)
+    saved = record.read_record(path)
+    with Image.open(preview) as image:
+        names = record.labels(saved, "Village")
+        assert image.tobytes() == render_level(scene, "Village", labels=names).tobytes()
+
+
+def test_example_no_record_no_names(tmp_path: Path) -> None:
+    """沒有生成紀錄的場景地圖（用 M1 的操作建的），就算放了規則檔，預覽圖也不寫名稱。"""
+    path = tmp_path / "village.ldtk"
+    actions.create_scene(path)
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    result = actions.paint_cells(path, "Level_0", cells=[(0, 0)], value=1)
+    with Image.open(result.previews[0]) as image:
+        assert image.tobytes() == render_level(load_scene(path), "Level_0").tobytes()
+    assert "元素名稱" not in result.summary
+
+
+def test_example_broken_record_says_so(tmp_path: Path) -> None:
+    """生成紀錄讀不了時，操作照做，摘要說預覽圖沒寫名稱。"""
+    path = _generated(tmp_path)
+    record.record_path(path).write_text("{", encoding="utf-8")
+    result = actions.render_level(path, "Village")
+    assert "生成紀錄讀不了" in result.summary

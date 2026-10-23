@@ -10,6 +10,7 @@ LDtk 自己會重算或改寫的欄位（`__` 衍生欄位、auto-layer 圖塊�
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,7 +19,7 @@ from .errors import SceneError
 from .layout import Layout
 from .scene import SceneMap
 
-VERSION = 1
+VERSION = 2  # 2：加上預覽圖要寫的元素名稱
 _DEF_NAMES = {"layers": "圖層", "entities": "entity ", "tilesets": "tileset "}
 _EXAMPLES = 3  # 每一層最多列幾格不同的例子
 
@@ -35,20 +36,23 @@ def record_path(scene_path: Path) -> Path:
     return scene_path.with_name(f"{scene_path.stem}.generated.json")
 
 
-def content(target: SceneMap) -> Content:
+def content(target: SceneMap, *, refreshed: bool = False) -> Content:
     """場景地圖裡使用者會改的內容；兩份相同就表示沒被直接改過。
 
-    在複本上算，不改傳進來的場景地圖；內容的形狀不對（例如 LDtk 裡刪了還在用的定義）丟 SceneError。
+    在複本上算，不改傳進來的場景地圖；`refreshed=True` 表示呼叫端剛跑過 refresh_derived，
+    直接讀、不複製。內容的形狀不對（例如 LDtk 裡刪了還在用的定義）丟 SceneError。
     """
     try:
-        return _content(target)
+        return _content(target, refreshed)
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise SceneError(f"場景地圖的內容不完整（{error!r}）") from error
 
 
-def _content(target: SceneMap) -> Content:
-    project = copy.deepcopy(target.project)
-    refresh_derived(project)
+def _content(target: SceneMap, refreshed: bool) -> Content:
+    project = target.project
+    if not refreshed:
+        project = copy.deepcopy(project)
+        refresh_derived(project)  # entity 的格位置從 px 重算，不靠檔案裡可能過期的 __grid
     grid = project["defaultGridSize"]
     raw = cast(dict[str, Any], project["defs"])
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
@@ -114,14 +118,55 @@ def _fields(owner: object) -> list[list[object]]:
     return [[f.get("defUid"), f.get("__value")] for f in found]
 
 
-def make_record(target: SceneMap, placed: Layout) -> dict[str, Any]:
-    """生成之後要寫進紀錄的資料：場景地圖的內容，加上每個元素的位置（用來說誰移動了）。"""
+def make_record(target: SceneMap, placed: Layout, level: str, areas: set[str]) -> dict[str, Any]:
+    """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素的位置（用來說誰移動了），
+    以及預覽圖上 `level` 要寫的元素名稱。
+    """
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
         elements[name] = _digest(sorted(cells))
     for name, cell in placed.entities.items():
         elements[name] = _digest([cell])
-    return {"version": VERSION, "content": content(target), "elements": elements}
+    names = [[name, x, y] for name, x, y in name_positions(placed, areas)]
+    return {
+        "version": VERSION,
+        "content": content(target),
+        "elements": elements,
+        "labels": {"level": level, "names": names},
+    }
+
+
+def name_positions(placed: Layout, areas: set[str]) -> list[tuple[str, float, float]]:
+    """預覽圖上每個區域、路徑的名稱寫在哪裡（格座標）。
+
+    `areas` 是區域的名稱，其餘是路徑。區域寫在正中央；
+    路徑寫在自己的格裡、離外框中心最近的一格，L 形路才不會寫到空地上。
+    """
+    found: list[tuple[str, float, float]] = []
+    for name, cells in placed.cells.items():
+        xs = [x for x, _ in cells]
+        ys = [y for _, y in cells]
+        cx, cy = (min(xs) + max(xs) + 1) / 2, (min(ys) + max(ys) + 1) / 2
+        if name not in areas:
+            x, y = min(
+                cells, key=lambda c: (abs(c[0] + 0.5 - cx) + abs(c[1] + 0.5 - cy), c[1], c[0])
+            )
+            cx, cy = x + 0.5, y + 0.5
+        found.append((name, cx, cy))
+    return found
+
+
+def labels(saved: dict[str, Any] | None, level: str) -> list[tuple[str, float, float]]:
+    """從生成紀錄取出某個 level 要寫的元素名稱；沒有紀錄或不是生成的 level 就是空的。"""
+    found = saved.get("labels") if saved else None
+    if not isinstance(found, dict) or cast(dict[str, Any], found).get("level") != level:
+        return []
+    try:
+        names = [(str(n), float(x), float(y)) for n, x, y in cast(dict[str, Any], found)["names"]]
+    except (KeyError, TypeError, ValueError):
+        return []
+    # JSON 讀得進 NaN、Infinity，這種位置畫不出來，略過
+    return [(n, x, y) for n, x, y in names if math.isfinite(x) and math.isfinite(y)]
 
 
 def dump(data: dict[str, Any]) -> bytes:
