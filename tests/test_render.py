@@ -22,11 +22,18 @@ from ldtk_map_creator.core.render import (
     image_size,
     name_boxes,
     render_level,
+    render_world,
+    world_links,
+    world_rects,
     write_preview,
 )
 from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
-from tests.rule_strategies import one_level_rules, placeable_village_rules
+from tests.rule_strategies import (
+    one_level_rules,
+    placeable_multi_village_rules,
+    placeable_village_rules,
+)
 
 FAST = settings(max_examples=30, deadline=None)
 
@@ -408,3 +415,52 @@ def test_example_record_with_nan_position_is_skipped() -> None:
     """生成紀錄裡的位置是 NaN 或 Infinity（JSON 讀得進來）時略過，不讓 render 當掉。"""
     saved = {"labels": {"L": [["a", float("nan"), 1], ["b", 1, float("inf")], ["c", 1, 1]]}}
     assert record.labels(saved, "L") == [("c", 1.0, 1.0)]
+
+
+@pytest.mark.law("RENDER-6")
+@settings(max_examples=30, deadline=None)
+@given(placeable_multi_village_rules(min_portals=1))
+def test_render_6_world_overview(r: Rules) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk")
+    image = render_world(scene)
+    assert image.tobytes() == render_world(scene).tobytes()  # 同一份場景地圖，位元組相同
+    levels = scene.project["levels"]
+    left = min(lv["worldX"] for lv in levels)
+    top = min(lv["worldY"] for lv in levels)
+    span = max(
+        max(lv["worldX"] + lv["pxWid"] for lv in levels) - left,
+        max(lv["worldY"] + lv["pxHei"] for lv in levels) - top,
+    )
+    scale = min(1.0, 1600 / span)
+    frame = (24, 26, 34, 255)
+    _, rects = world_rects(scene)
+    for level in levels:  # 照世界座標等比例縮小，左上角留邊框
+        x, y, w, h = rects[level["identifier"]]
+        assert (x, y) == (
+            MARGIN + round((level["worldX"] - left) * scale),
+            MARGIN + round((level["worldY"] - top) * scale),
+        )
+        assert (w, h) == (
+            max(1, round(level["pxWid"] * scale)),
+            max(1, round(level["pxHei"] * scale)),
+        )
+        background = sum(
+            1 for i in range(w) for j in range(h) if image.getpixel((x + i, y + j)) == frame
+        )
+        assert background < 0.1 * w * h, level["identifier"]  # level 有畫出來，不是空白
+    # 每一對互指的 EntityRef（傳送點）畫一條線：兩端換成總覽座標後，中點附近是線的顏色
+    links = world_links(scene)
+    assert len(links) == len(r.portals)
+    for start, end in links:
+        (x0, y0), (x1, y1) = (
+            (MARGIN + round((px - left) * scale), MARGIN + round((py - top) * scale))
+            for px, py in (start, end)
+        )
+        mx, my = (x0 + x1) // 2, (y0 + y1) // 2
+        around = [
+            cast(tuple[int, ...], image.getpixel((mx + dx, my + dy)))[:3]
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+        ]
+        assert (255, 214, 0) in around, (mx, my)
