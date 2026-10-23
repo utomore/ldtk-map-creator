@@ -40,7 +40,7 @@ decision-makers: [utomore]
 
 | 改動 | 誰合 |
 |---|---|
-| ① `CLAUDE.md`、`docs/adr/**`、`docs/glossary.md` | 我；PR 標題加 `[需人工合併]` |
+| ① `CLAUDE.md`、`docs/adr/**` | 我；PR 標題加 `[需人工合併]` |
 | ② 分層慣例（IntGrid 層與 Entity 的命名和意義） | 我；同上 |
 | ③ 場景地圖存檔結構（規則檔格式、檔案擺法） | 我；同上 |
 | ⑤ 新增或升級主要依賴（例如 `mcp`、Pillow 的大版本） | 我；同上 |
