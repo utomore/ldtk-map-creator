@@ -15,19 +15,21 @@ decision-makers: [utomore]
 ```
 src/<套件名>/
   core/   場景地圖模型、IntGrid / Entity 操作、規則生成、render、讀寫檔
+          actions.py：操作，入口直接呼叫的單位（讀檔、做一件事、寫回、更新預覽圖）
   mcp/    MCPServer 工具，只轉呼叫 core
   cli/    CLI 指令，只轉呼叫 core
 依賴方向：mcp → core ← cli
 ```
 
 - `core/` 放所有規則；不 import `mcp/` 與 `cli/`。
+- 每個操作在 `core/actions.py` 一個函式，`mcp/`、`cli/` 各一個轉呼叫；名稱一一對應。
 - `mcp/`、`cli/` 只做參數轉換、呼叫 `core/`、把結果或錯誤轉成入口的格式；不寫邏輯。
 - 讀寫檔與 render 的 I/O 也在 `core/`。
 - 命名只用 `docs/glossary.md` 登記過的名詞。
 
 **law 住在哪裡：**
 
-- 整個專案一份 `docs/laws.md`，用前綴分區：`GEN-`（生成）、`FILE-`（讀寫檔）、`SCENE-`（場景地圖）、`RENDER-`（預覽圖）。
+- 整個專案一份 `docs/laws.md`，用前綴分區：`GEN-`（生成）、`FILE-`（讀寫檔）、`SCENE-`（場景地圖）、`RENDER-`（預覽圖）、`ENTRY-`（入口）。
 - 編號如 `GEN-1`，不重用。
 - 測試用 `law("<編號>")` 標記對到 law，例如 `GEN-1` 對 `test_gen_1_same_seed_same_output`。
 

@@ -4,12 +4,15 @@
 
 - 給我自己的遊戲用：我和 Claude Code 對話，透過這個工具的 MCP server，從規則生成整張 LDtk 場景地圖，再一步步微調。
 - 地圖照固定的分層慣例寫出（IntGrid 區域與 Entity 位置），引擎照慣例就能長出關卡；每一步都輸出 PNG 預覽。
-- 現在做到：規範已定，還沒有程式碼。
+- 現在做到：M1 對話迴圈，能建場景地圖、新增 level、畫 IntGrid、擺 entity，每步回傳預覽圖。
 - 不做：服務其他 LDtk 使用者、引擎端的匯入程式、其他地圖格式、遊戲執行時即時生成。
 
 ## 開始
 
-- 還沒有程式碼；M1 完成後補上。
+- 安裝：`uv sync`。
+- 在 Claude Code 用：這個 repo 的 `.mcp.json` 已經設好 `ldtk-map-creator` MCP server，開啟專案時核准它。
+- 在命令列用：`uv run ldtk-map-creator --help`，每個 MCP 工具都有同名的子指令。
+- 改完要跑：`bash scripts/check.sh`、`bash scripts/test.sh`。
 
 ## 文件
 

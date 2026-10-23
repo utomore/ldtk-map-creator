@@ -9,6 +9,10 @@ dependencies = [
     "pillow>=10.1",
 ]
 
+[project.scripts]
+ldtk-map-creator = "ldtk_map_creator.cli.main:main"
+ldtk-map-creator-mcp = "ldtk_map_creator.mcp.server:main"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.8",

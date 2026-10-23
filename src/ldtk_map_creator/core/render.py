@@ -208,10 +208,10 @@ def preview_path(scene: SceneMap, level_id: str) -> Path:
     return scene.path.parent / "previews" / scene.path.stem / f"{level_id}.png"
 
 
-def save_preview(scene: SceneMap, level_id: str, *, scale: int = 2) -> Path:
-    """render 一個 level 並存成 PNG，回傳路徑。"""
+def write_preview(scene: SceneMap, level_id: str, image: Image.Image) -> Path:
+    """把 render 好的圖存成那個 level 的預覽圖，回傳路徑。"""
     buffer = io.BytesIO()
-    render_level(scene, level_id, scale=scale).save(buffer, format="PNG")
+    image.save(buffer, format="PNG")
     path = preview_path(scene, level_id)
     atomic_write(path, buffer.getvalue())
     return path

@@ -72,6 +72,9 @@ def new_scene(path: Path, *, split: bool = True) -> SceneMap:
         raise SceneError(f"場景地圖的主檔要是 .ldtk：{path}")
     if path.exists():
         raise SceneError(f"已經有這個檔，不覆蓋：{path}")
+    leftover = path.parent / path.stem
+    if leftover.is_dir() and any(leftover.glob("*.ldtkl")):
+        raise SceneError(f"{leftover} 裡已經有 level 檔，不覆蓋；先移走再建")
     project = template.project()
     project["iid"] = ""
     project["dummyWorldIid"] = ""
@@ -163,34 +166,45 @@ def _write_json(path: Path, data: object) -> None:
     atomic_write(path, text.encode("utf-8"))
 
 
-def save_scene(scene: SceneMap) -> list[Path]:
+def save_scene(
+    scene: SceneMap, *, levels: set[str] | None = None, refreshed: bool = False
+) -> list[Path]:
     """寫出場景地圖，回傳寫了哪些檔。
 
-    主檔寫好之後才刪掉子資料夾裡沒有對應 level 的 `.ldtkl`（單檔時全部刪），
-    所以中途失敗時，舊主檔指向的檔都還在。
+    - 拆開存時只寫 `levels` 列出的 level 的 `.ldtkl`（None 是全部；磁碟上沒有的照樣寫）。
+    - 主檔寫好之後才刪掉子資料夾裡沒有對應 level 的 `.ldtkl`（單檔時全部刪），
+      所以中途失敗時，舊主檔指向的檔都還在。
+    - `refreshed=True` 表示呼叫端剛跑過 refresh_derived，不再跑一次。
     """
     project = scene.project
-    refresh_derived(project)
+    if not refreshed:
+        refresh_derived(project)
     written: list[Path] = []
-    main = cast(dict[str, Any], dict(project))
-    if scene.split:
-        header = main.get(_HEADER_KEY)
-        levels: list[dict[str, Any]] = []
-        for level in cast(list[dict[str, Any]], project["levels"]):
-            rel = f"{scene.path.stem}/{level['identifier']}.ldtkl"
-            sub = scene.path.parent / rel
-            _write_json(sub, {_HEADER_KEY: header, **level, "externalRelPath": None})
-            written.append(sub)
-            levels.append({**level, "externalRelPath": rel, "layerInstances": None})
-        main["levels"] = levels
-    _write_json(scene.path, main)
-    # 主檔寫好之後才清：單檔時整個子資料夾的 .ldtkl 都是之前拆開存留下的
     folder = scene.path.parent / scene.path.stem
-    kept = {p.resolve() for p in written}
-    for stale in folder.glob("*.ldtkl"):
-        if stale.resolve() not in kept:
-            stale.unlink()
-    if folder.is_dir() and not any(folder.iterdir()):
-        folder.rmdir()
+    main = cast(dict[str, Any], dict(project))
+    try:
+        if scene.split:
+            header = main.get(_HEADER_KEY)
+            entries: list[dict[str, Any]] = []
+            kept: set[Path] = set()
+            for level in cast(list[dict[str, Any]], project["levels"]):
+                rel = f"{scene.path.stem}/{level['identifier']}.ldtkl"
+                sub = scene.path.parent / rel
+                kept.add(sub.resolve())
+                if levels is None or level["identifier"] in levels or not sub.exists():
+                    _write_json(sub, {_HEADER_KEY: header, **level, "externalRelPath": None})
+                    written.append(sub)
+                entries.append({**level, "externalRelPath": rel, "layerInstances": None})
+            main["levels"] = entries
+        else:
+            kept = set()
+        _write_json(scene.path, main)
+        for stale in folder.glob("*.ldtkl"):
+            if stale.resolve() not in kept:
+                stale.unlink()
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+    except OSError as error:
+        raise SceneError(f"寫不了場景地圖 {scene.path}：{error}") from error
     written.append(scene.path)
     return written

@@ -196,7 +196,7 @@ def test_example_other_broken_level_does_not_block_edits(tmp_path: Path) -> None
     scene = _scene(tmp_path, 4, 4)
     scene.level("Level_0")["pxWid"] += 16
     entity = place_entity(scene, "Room", "Spawn", x=1, y=1)
-    assert move_entity(scene, entity["iid"], x=2, y=3)["__grid"] == [2, 3]
+    assert move_entity(scene, entity["iid"], x=2, y=3)[1]["__grid"] == [2, 3]
 
 
 def test_example_stale_intgrid_is_reported_not_half_painted(tmp_path: Path) -> None:
@@ -303,4 +303,4 @@ def test_example_move_after_definition_renamed(tmp_path: Path) -> None:
     scene = _scene(tmp_path, 4, 4)
     iid = place_entity(scene, "Room", "Spawn", x=0, y=0)["iid"]
     scene.project["defs"]["entities"][0]["identifier"] = "PlayerStart"
-    assert move_entity(scene, iid, x=3, y=3)["__grid"] == [3, 3]
+    assert move_entity(scene, iid, x=3, y=3)[1]["__grid"] == [3, 3]

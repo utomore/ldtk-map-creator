@@ -62,9 +62,8 @@ def _intgrid(
     target = _layer(scene.project, level, layer, "IntGrid")
     _, width, height = _grid_size(scene.project, level, target)
     if len(target["intGridCsv"]) != width * height:
-        raise SceneError(
-            f"圖層 {target['iid']} 有 {len(target['intGridCsv'])} 格，尺寸是 {width}x{height}"
-        )
+        name = _layer_def(scene.project, target)["identifier"]
+        raise SceneError(f"圖層 {name} 有 {len(target['intGridCsv'])} 格，尺寸是 {width}x{height}")
     return level, target, width, height
 
 
@@ -86,13 +85,13 @@ def _paint(
 ) -> int:
     level, target, width, height = _intgrid(scene, level_id, layer)
     _check_inside(width, height, cells, level)
-    _check_no_auto_rules(scene.project, _layer_def(scene.project, target))
+    ldef = _layer_def(scene.project, target)
+    _check_no_auto_rules(scene.project, ldef)
     if type(value) is not int:
         raise SceneError(f"IntGrid 的值要是整數：{value!r}")
-    if value != 0:
-        declared = [v["value"] for v in _layer_def(scene.project, target)["intGridValues"]]
-        if value not in declared:
-            raise SceneError(f"圖層 {target['iid']} 沒有宣告值 {value}；宣告過的：{declared}")
+    declared = [v["value"] for v in ldef["intGridValues"]]
+    if value != 0 and value not in declared:
+        raise SceneError(f"圖層 {ldef['identifier']} 沒有宣告值 {value}；宣告過的：{declared}")
     changed = 0
     for x, y in cells:
         index = y * width + x
@@ -235,7 +234,8 @@ def place_entity(
     return instance
 
 
-def _find_entity(scene: SceneMap, iid: str) -> tuple[Level, LayerInstance, EntityInstance]:
+def find_entity(scene: SceneMap, iid: str) -> tuple[Level, LayerInstance, EntityInstance]:
+    """用 iid 找 entity，回傳（所在 level, 所在圖層, entity）。"""
     for level in scene.project["levels"]:
         for layer in level["layerInstances"] or []:
             for entity in layer["entityInstances"]:
@@ -244,9 +244,9 @@ def _find_entity(scene: SceneMap, iid: str) -> tuple[Level, LayerInstance, Entit
     raise SceneError(f"找不到 entity {iid}")
 
 
-def move_entity(scene: SceneMap, iid: str, *, x: int, y: int) -> EntityInstance:
-    """把 entity 移到同一個 level 的 (x, y) 格。"""
-    level, layer, entity = _find_entity(scene, iid)
+def move_entity(scene: SceneMap, iid: str, *, x: int, y: int) -> tuple[Level, EntityInstance]:
+    """把 entity 移到同一個 level 的 (x, y) 格；回傳（所在 level, entity）。"""
+    level, layer, entity = find_entity(scene, iid)
     grid, width, height = _grid_size(scene.project, level, layer)
     _check_inside(width, height, [(x, y)], level)
     edef = _entity_def_by_uid(scene.project, entity["defUid"])
@@ -254,10 +254,12 @@ def move_entity(scene: SceneMap, iid: str, *, x: int, y: int) -> EntityInstance:
     refresh_derived(scene.project, only=level)  # 先確定這個 level 本身沒問題，才動資料
     entity["px"] = [cell_to_px(x, edef["pivotX"], grid), cell_to_px(y, edef["pivotY"], grid)]
     refresh_derived(scene.project, only=level)
-    return entity
+    return level, entity
 
 
-def delete_entity(scene: SceneMap, iid: str) -> None:
-    _, layer, entity = _find_entity(scene, iid)
+def delete_entity(scene: SceneMap, iid: str) -> Level:
+    """刪掉一個 entity；回傳它原本所在的 level。"""
+    level, layer, entity = find_entity(scene, iid)
     _check_toc(_entity_def_by_uid(scene.project, entity["defUid"]))
     layer["entityInstances"].remove(entity)
+    return level

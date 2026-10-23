@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ldtk-map-creator": {
+      "command": "uv",
+      "args": ["run", "ldtk-map-creator-mcp"],
+      "env": { "PYTHONIOENCODING": "utf-8" }
+    }
+  }
+}

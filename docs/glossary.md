@@ -13,4 +13,6 @@
 | 微調 | 生成之後透過對話直接修改場景地圖的操作；不是改規則再重生 | - |
 | 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接；不是某款遊戲專用的層名 | - |
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level` |
+| 操作 | 入口直接呼叫的單位：讀場景地圖、做一件事、寫回、更新預覽圖；一個操作對應一個 MCP 工具與一個 CLI 指令。不是 core 裡單純改記憶體的函式 | `core/actions.py` |
+| 預覽圖 | 一個 level render 成的 PNG，存在 `previews/<主檔名>/<level>.png`；不是 LDtk 自己匯出的圖 | `render_level`、`write_preview` |
 | 範本 | 用 LDtk 1.5.3 存出的空專案，新的場景地圖與 level 從它複製；不是規則檔 | `core/templates/` |

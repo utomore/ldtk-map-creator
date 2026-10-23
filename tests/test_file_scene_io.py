@@ -108,9 +108,9 @@ def test_file_4_intgrid_size_matches_level(spec: SceneSpec) -> None:
 def test_file_5_split_layout(spec: SceneSpec) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
-        (folder / "scene").mkdir()
-        (folder / "scene" / "Gone.ldtkl").write_text("{}", encoding="utf-8")
         scene = build_scene(spec, folder)
+        (folder / "scene").mkdir(exist_ok=True)
+        (folder / "scene" / "Gone.ldtkl").write_text("{}", encoding="utf-8")  # 之前存檔留下的
         save_scene(scene)
         main = load_json(scene.path)
         actual = {f"scene/{p.name}" for p in folder.glob("scene/*.ldtkl")}
@@ -344,3 +344,12 @@ def test_example_linear_layout_has_no_neighbours(tmp_path: Path) -> None:
 
 def _template_level_layers() -> list[Any]:
     return load_json(TEMPLATES / "single.ldtk")["levels"][0]["layerInstances"]
+
+
+def test_example_new_scene_refuses_leftover_level_files(tmp_path: Path) -> None:
+    """曾經壞過：主檔不在、同名資料夾裡還有 level 檔時，不建新的，免得刪掉它們。"""
+    (tmp_path / "village").mkdir()
+    (tmp_path / "village" / "Inside.ldtkl").write_text("{}", encoding="utf-8")
+    with pytest.raises(SceneError):
+        new_scene(tmp_path / "village.ldtk")
+    assert (tmp_path / "village" / "Inside.ldtkl").is_file()
