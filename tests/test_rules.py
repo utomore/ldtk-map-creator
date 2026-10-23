@@ -49,7 +49,11 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     options = ["top_key", "level_key", "level_size", "bad_seed", "kind_value", "kind_color"]
     options.append("bool_int")
     if elements:
-        options += ["element_key", "bad_type", "missing_kind_or_ref", "self_ref"]
+        options += ["element_key", "bad_type", "missing_kind_or_ref"]
+    if good.paths or any(a.near for a in good.areas):
+        options.append("self_ref")
+    if good.paths:
+        options.append("path_same_ends")
     if len(elements) >= 2:
         options.append("duplicate")
     if any(a.at is not None for a in good.areas):
@@ -89,7 +93,9 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         case "kind_value":
             name = draw(st.sampled_from(sorted(kinds)))
             others = [k["value"] for n, k in kinds.items() if n != name]
-            kinds[name]["value"] = draw(st.sampled_from([*BAD_VALUES, 0, -1, *others]))
+            # 不放 True：True == 1 會跟值是 1 的種類算成撞值；bool_int 另外測
+            wrong = [v for v in BAD_VALUES if v is not True]
+            kinds[name]["value"] = draw(st.sampled_from([*wrong, 0, -1, *others]))
             # 撞到的值會報在排在後面的那個種類
             order = list(kinds)
             clash = [n for n in order if n != name and kinds[n]["value"] == kinds[name]["value"]]
@@ -121,8 +127,6 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             return data, f"{element['name']}.{field}"
         case "self_ref":
             refs = [e for _, _, e in elements if "near" in e or "from" in e]
-            if not refs:
-                return data | {"extra": 1}, "規則檔.extra"
             element = draw(st.sampled_from(refs))
             field = "near" if "near" in element else "from"
             element[field] = element["name"]
@@ -136,24 +140,34 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             elements[j][2]["name"] = elements[i][2]["name"]
             return data, f"{elements[i][2]['name']}.name"
         case "two_cycle":
-            # x 原本固定位置，改成靠近一個（直接或間接）指向 x 的元素 y，形成 x → y → x
+            # x 原本固定位置，改成靠近一個直接或間接指向 x 的元素 y，形成 x → y → … → x
             fixed = [e for e in data["area"] if "at" in e]
             x = draw(st.sampled_from(fixed))
-            pointing = [
-                (e, f)
-                for _, _, e in elements
-                for f in ("near", "from", "to")
-                if e.get(f) == x["name"]
-            ]
-            if not pointing:
+            refs = ("near", "from", "to")
+            pointing = [(e, f) for _, _, e in elements for f in refs if e.get(f) == x["name"]]
+            # 每個元素沿著參照走回 x 的最長距離；不成環，所以算到不再變就停
+            depth = {x["name"]: 0}
+            changed = True
+            while changed:
+                changed = False
+                for _, _, e in elements:
+                    d = max((depth[e[f]] + 1 for f in refs if e.get(f) in depth), default=0)
+                    if d > depth.get(e["name"], 0):
+                        depth[e["name"]] = d
+                        changed = True
+            if len(depth) == 1:
                 x["near"] = x["name"]
                 del x["at"]
                 return data, f"{x['name']}.near"
-            y, _ = draw(st.sampled_from(pointing))
-            x["near"] = y["name"]
+            # 挑最長的環，三個以上元素的環才測得到
+            x["near"] = max(depth, key=lambda n: depth[n])
             del x["at"]
             # 其他元素都只指向排在前面的，所以環一定經過 x，由某條指向 x 的邊報出
             return data, "|".join(f"{e['name']}.{f}" for e, f in pointing)
+        case "path_same_ends":
+            path = draw(st.sampled_from(data["path"]))
+            path["to"] = path["from"]
+            return data, f"{path['name']}.to"
         case "area_size":
             area = draw(st.sampled_from(data["area"]))
             w, h = data["level"]["size"]
@@ -194,3 +208,19 @@ def test_toml_syntax_error(tmp_path: Path) -> None:
     path.write_text("seed = \n", encoding="utf-8")
     with pytest.raises(SceneError, match=r"bad.rules.toml"):
         load_rules(path)
+
+
+def test_long_reference_chain() -> None:
+    """曾經壞過：一長串 near 讓成環檢查超過遞迴上限，丟出 RecursionError（#23 審查）。"""
+    # 每個區域靠近排在後面的那個，檢查從第一個走起就要走完整條
+    areas: list[dict[str, Any]] = [
+        {"name": f"a{i}", "kind": "k", "size": [1, 1], "near": f"a{i + 1}"} for i in range(2999)
+    ]
+    areas.append({"name": "a2999", "kind": "k", "size": [1, 1], "at": "center"})
+    data = {
+        "seed": 1,
+        "level": {"name": "L", "size": [4, 4]},
+        "kinds": {"k": {"value": 1, "color": "#000000"}},
+        "area": areas,
+    }
+    assert len(parse_rules(data).areas) == 3000

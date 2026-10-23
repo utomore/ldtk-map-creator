@@ -13,6 +13,8 @@
 | 元素 | 規則檔裡一個有名字的項目，對應地圖上的一塊東西：區域、路徑或 entity；不是 LDtk 的 entity 定義 | `AreaRule`、`PathRule`、`EntityRule` |
 | 錨點 | 元素上可以讓別的元素指向的位置，例如 `main_road.end`；不是 entity 的 pivot | `AREA_ANCHORS`、`PATH_ANCHORS` |
 | 圖格種類 | 規則檔 `[kinds]` 裡一個有名字的 IntGrid 值與顏色，元素用它決定畫成什麼；不是工作的種類 | `Kind` |
+| 方位 | 規則檔裡的東南西北：`side` 指區域在誰的哪一邊，`edge:<方位>` 指 level 的哪一邊；不是 LDtk 的 `__neighbours` 方向 | `Side`、`SIDES` |
+| 格 | level 上一格 IntGrid 的位置或大小，以格為單位、原點在左上角；不是像素 | `Cell` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
 | 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接；不是某款遊戲專用的層名 | - |
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level` |

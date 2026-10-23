@@ -64,11 +64,11 @@ def rules(draw: st.DrawFn) -> Rules:
             anchors += [f"{name}.{a}" for a in AREA_ANCHORS]
         elif choice == "path":
             edge = st.sampled_from([f"edge:{s}" for s in SIDES])
-            to = draw(edge | st.sampled_from(targets))
-            width_cells = draw(st.integers(1, min(width, height)))
-            paths.append(
-                PathRule(name, draw(kind), draw(st.sampled_from(targets)), to, width_cells)
-            )
+            start = draw(st.sampled_from(targets))
+            others = [t for t in targets if t != start]
+            to = draw(edge | st.sampled_from(others) if others else edge)
+            width_cells = draw(st.integers(1, max(width, height)))
+            paths.append(PathRule(name, draw(kind), start, to, width_cells))
             targets.append(name)
             anchors += [f"{name}.{a}" for a in PATH_ANCHORS]
         else:

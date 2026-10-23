@@ -216,11 +216,14 @@ def _check_links(rules: Rules) -> None:
             target(area.near, f"{area.name}.near")
     for path in rules.paths:
         _check_kind(path.kind, kinds, f"{path.name}.kind")
-        if path.width > min(width, height):
+        # 路徑方向要排了才知道，這裡只擋兩個方向都放不下的
+        if path.width > max(width, height):
             raise SceneError(f"{path.name}.width：{path.width} 比 level 的 {width}x{height} 寬")
         target(path.start, f"{path.name}.from")
         if not path.to.startswith(_EDGE):
             target(path.to, f"{path.name}.to")
+            if path.to == path.start:
+                raise SceneError(f"{path.name}.to：起點與終點是同一個元素 {path.to}")
     for entity in rules.entities:
         if isinstance(entity.at, tuple):
             x, y = entity.at
@@ -246,22 +249,26 @@ def _check_cycles(rules: Rules) -> None:
         if not path.to.startswith(_EDGE):
             edges[path.name].append((path.to, "to"))
 
+    # 不用遞迴：參照鏈很長時也不會超過 Python 的遞迴上限
     done: set[str] = set()
-
-    def visit(name: str, stack: list[str]) -> None:
-        if name in done:
-            return
-        stack.append(name)
-        for ref, field in edges[name]:
+    for root in edges:
+        if root in done:
+            continue
+        stack = [root]
+        todo = [iter(edges[root])]
+        while todo:
+            step = next(todo[-1], None)
+            if step is None:
+                done.add(stack.pop())
+                todo.pop()
+                continue
+            ref, field = step
             if ref in stack:
                 loop = " → ".join([*stack[stack.index(ref) :], ref])
-                raise SceneError(f"{name}.{field}：元素互相指向成環：{loop}")
-            visit(ref, stack)
-        stack.pop()
-        done.add(name)
-
-    for name in edges:
-        visit(name, [])
+                raise SceneError(f"{stack[-1]}.{field}：元素互相指向成環：{loop}")
+            if ref not in done:
+                stack.append(ref)
+                todo.append(iter(edges[ref]))
 
 
 # 基本型別 ------------------------------------------------------------------
@@ -274,8 +281,9 @@ def _keys(
     required: set[str],
     optional: frozenset[str] | set[str] = frozenset(),
 ) -> None:
+    allowed = required | optional
     for key in table:
-        if key not in required | optional:
+        if key not in allowed:
             raise SceneError(f"{where}.{key}：不認得的欄位")
     for key in sorted(required):
         if key not in table:
