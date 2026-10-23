@@ -48,6 +48,9 @@ def one_level_rules(
     return Rules(seed, (LevelRule(level, size),), kinds, areas, paths, entities, (), ())
 
 
+# 固定位置 level 的格位：彼此隔 25 格，level 最大 20 格，避開第一個 level 預設的 (0, 0)
+SLOTS = [(x * 25, y * 25) for x in range(-3, 4) for y in range(-3, 4) if (x, y) != (0, 0)]
+
 names = st.from_regex(r"[A-Za-z_][A-Za-z0-9_]{0,8}", fullmatch=True)
 
 
@@ -328,15 +331,17 @@ def multi_rules(draw: st.DrawFn) -> Rules:
     level_name = names.filter(lambda n: n.lower() not in RESERVED_NAMES)
     level_names = draw(st.lists(level_name, min_size=1, max_size=3, unique_by=lambda n: n.lower()))
     levels: list[LevelRule] = []
+    used_slots: list[tuple[int, int]] = []
     for i, name in enumerate(level_names):
         size = (draw(st.integers(1, 20)), draw(st.integers(1, 20)))
         how = draw(st.sampled_from(["none", "at"] if i == 0 else ["at", "near"]))
         if how == "none":
             levels.append(LevelRule(name, size))
         elif how == "at":
-            levels.append(
-                LevelRule(name, size, at=(draw(st.integers(-99, 99)), draw(st.integers(-99, 99))))
-            )
+            # 固定位置的 level 不能重疊：每個 level 佔一個 25 格見方的格位，包含負的座標
+            slot = draw(st.sampled_from([s for s in SLOTS if s not in used_slots]))
+            used_slots.append(slot)
+            levels.append(LevelRule(name, size, at=slot))
         else:
             near = draw(st.sampled_from(level_names[:i]))
             side = draw(st.none() | st.sampled_from(SIDES))

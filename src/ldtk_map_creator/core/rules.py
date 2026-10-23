@@ -182,10 +182,13 @@ def parse_rules(data: dict[str, Any]) -> Rules:
 def _levels(raw: object) -> tuple[LevelRule, ...]:
     """`[level]`（M2 的寫法，一個 level）或 `[[level]]`（D-009，多個 level）。"""
     if isinstance(raw, dict):
+        # 只有一個 level：可以擺在世界上（at），但沒有別的 level 可以靠近
         table = cast(dict[str, Any], raw)
-        _keys(table, "level", required={"name", "size"})
+        _keys(table, "level", required={"name", "size"}, optional={"at"})
         name = _level_name(table["name"], "level.name")
-        return (LevelRule(name, _size(table["size"], "level.size")),)
+        size = _size(table["size"], "level.size")
+        at = _pair(table["at"], "level.at", "[x, y]", minimum=None) if "at" in table else None
+        return (LevelRule(name, size, at=at),)
     if not isinstance(raw, list) or not raw:
         raise SceneError(f"level：要寫成 [level] 或至少一個 [[level]]：{raw!r}")
     levels: list[LevelRule] = []
@@ -236,6 +239,16 @@ def _check_levels(rules: Rules) -> None:
                 raise SceneError(f"level.{level.name}.near：沒有叫 {level.near} 的 level")
             edges[level.name].append((level.near, "near"))
     _no_cycles(edges, lambda name, field, loop: f"level.{name}.{field}：level 互相靠近成環：{loop}")
+    # 都用 at 固定位置的 level，現在就看得出重疊（靠近別人的要排了才知道，交給配置器）
+    fixed = [lv for lv in rules.levels if lv.near is None]
+    for i, level in enumerate(fixed):
+        x, y = level.at or (0, 0)
+        w, h = level.size
+        for other in fixed[:i]:
+            ox, oy = other.at or (0, 0)
+            ow, oh = other.size
+            if x < ox + ow and ox < x + w and y < oy + oh and oy < y + h:
+                raise SceneError(f"level.{level.name}.at：跟 level {other.name} 重疊")
 
 
 # 一個元素的欄位 ------------------------------------------------------------
@@ -335,7 +348,7 @@ def _portal(raw: object, where: str, types: tuple[EntityType, ...]) -> PortalRul
 def _entity_types(raw: object) -> tuple[EntityType, ...]:
     found: list[EntityType] = []
     # 範本已經有的 entity 定義（Spawn）照舊能用，宣告的類型不能跟它們同名
-    builtin = {d["identifier"].lower() for d in template.project()["defs"]["entities"]}
+    builtin = {name.lower() for name in template.entity_identifiers()}
     for name, value in _table(raw, "entity_types").items():
         where = f"entity_types.{name}"
         _name(name, where)
@@ -399,11 +412,7 @@ def _check_links(rules: Rules) -> None:
             raise SceneError(f"{element.name}.level：沒有叫 {element.level} 的 level")
 
     kinds = {k.name for k in rules.kinds}
-    by_name = {lv.name: lv for lv in rules.levels}
-
-    def level_for(element: AreaRule | PathRule | EntityRule) -> LevelRule:
-        return by_name[element.level or rules.levels[0].name]
-
+    level_for = rules.level_of
     level_of = {e.name: level_for(e).name for e in (*rules.areas, *rules.paths)}
     anchors = {f"{a.name}.{s}": level_of[a.name] for a in rules.areas for s in AREA_ANCHORS}
     anchors |= {f"{p.name}.{s}": level_of[p.name] for p in rules.paths for s in PATH_ANCHORS}

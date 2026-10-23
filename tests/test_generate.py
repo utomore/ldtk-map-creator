@@ -17,6 +17,7 @@ from ldtk_map_creator.core.rules import (
     SIDES,
     AreaRule,
     EntityRule,
+    EntityType,
     Kind,
     PathRule,
     Rules,
@@ -501,3 +502,10 @@ def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
     scene, _ = generate_scene(load_rules(path), tmp_path / "scene.ldtk")
     level = scene.level("Village")
     assert (level["worldX"], level["worldY"]) == (3 * 16, -2 * 16)
+
+
+def test_example_layout_ignores_declared_types() -> None:
+    """配置器只算位置：宣告了 entity 類型照樣排得出來（不支援的生成在 generate_scene 擋）。"""
+    r = load_rules(EXAMPLE)
+    r = dataclasses.replace(r, entity_types=(EntityType("Sign"),))
+    assert layout(r).cells

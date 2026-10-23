@@ -39,6 +39,11 @@ def entity_def() -> EntityDef:
     return found
 
 
+def entity_identifiers() -> list[str]:
+    """範本裡 entity 定義的名稱（唯讀，不複製整份範本）。"""
+    return [d["identifier"] for d in _cached()["defs"]["entities"]]
+
+
 def project() -> Project:
     """範本專案的一份新複本。"""
     return copy.deepcopy(_cached())

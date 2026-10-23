@@ -67,16 +67,10 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
 
 def layout(rules: Rules) -> Layout:
     """照規則排出每個元素；排不下丟 SceneError。"""
-    # 多個 level、entity 類型與傳送點的配置還沒做（#36、#37）；先講清楚，不默默只做一半
+    # 多個 level 的配置還沒做（#36）；先講清楚，不默默把元素排在同一個 level
     if len(rules.levels) > 1:
         raise SceneError(
             f"level：有 {len(rules.levels)} 個 level；多個 level 的生成還不支援（#36）"
-        )
-    if rules.portals:
-        raise SceneError(f"{rules.portals[0].name}.from：傳送點的生成還不支援（#37）")
-    if rules.entity_types:
-        raise SceneError(
-            f"entity_types.{rules.entity_types[0].name}：entity 類型的生成還不支援（#36）"
         )
     grid = _Grid(*rules.level_size)
     anchors: dict[str, Cell] = {}

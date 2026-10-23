@@ -411,3 +411,24 @@ def test_example_level_of_unknown_level_is_scene_error() -> None:
     lost = AreaRule("lost", "plaza", (1, 1), at=(0, 0), level="Nope")
     with pytest.raises(SceneError, match=r"^lost\.level"):
         r.level_of(lost)
+
+
+def test_example_fixed_levels_must_not_overlap() -> None:
+    """兩個都用 at 固定位置的 level 重疊：讀規則檔時就報錯（D-009：level 彼此不重疊）。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    data["level"][1] = {
+        "name": "House1",
+        "size": [12, 10],
+        "at": [10, 10],
+    }  # Village 在 (0,0) 40x30
+    with pytest.raises(SceneError, match=r"^level\.House1\.at："):
+        parse_rules(data)
+
+
+def test_example_single_table_level_takes_at() -> None:
+    """M2 的 `[level]` 寫法也能寫 at，跟 `[[level]]` 一樣。"""
+    text = EXAMPLE.read_text(encoding="utf-8").replace(
+        "size = [40, 30]  # 格", "size = [40, 30]\nat = [3, -2]"
+    )
+    assert parse_rules(tomllib.loads(text)).levels[0].at == (3, -2)
