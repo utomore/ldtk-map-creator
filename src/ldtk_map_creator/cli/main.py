@@ -63,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     p = command("render_level", "重新 render 預覽圖")
     p.add_argument("level")
     p.add_argument("--scale", type=int, default=2)
+    p = command("generate_scene", "照 <名>.rules.toml 生成場景地圖")
+    p.add_argument("--force", action="store_true", help="地圖被直接改過也照規則蓋掉")
     return parser
 
 
@@ -89,6 +91,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], ActionResult]] = {
     "move_entity": lambda a: actions.move_entity(a.path, a.iid, x=a.x, y=a.y),
     "delete_entity": lambda a: actions.delete_entity(a.path, a.iid),
     "render_level": lambda a: actions.render_level(a.path, a.level, scale=a.scale),
+    "generate_scene": lambda a: actions.generate_scene(a.path, force=a.force),
 }
 
 

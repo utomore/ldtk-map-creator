@@ -68,15 +68,19 @@ def _empty_layers(project: Project, level: Level, rng: random.Random) -> list[La
     return layers
 
 
-def new_scene(path: Path, *, split: bool = True) -> SceneMap:
-    """從範本建一個新的場景地圖，含一個空的 `Level_0`；還沒寫檔。"""
+def new_scene(path: Path, *, split: bool = True, overwrite: bool = False) -> SceneMap:
+    """從範本建一個新的場景地圖，含一個空的 `Level_0`；還沒寫檔。
+
+    `overwrite=True` 時不管磁碟上已經有的檔（重新生成用；寫檔時才蓋掉）。
+    """
     if path.suffix != ".ldtk":
         raise SceneError(f"場景地圖的主檔要是 .ldtk：{path}")
-    if path.exists():
-        raise SceneError(f"已經有這個檔，不覆蓋：{path}")
-    leftover = path.parent / path.stem
-    if leftover.is_dir() and any(leftover.glob("*.ldtkl")):
-        raise SceneError(f"{leftover} 裡已經有 level 檔，不覆蓋；先移走再建")
+    if not overwrite:
+        if path.exists():
+            raise SceneError(f"已經有這個檔，不覆蓋：{path}")
+        leftover = path.parent / path.stem
+        if leftover.is_dir() and any(leftover.glob("*.ldtkl")):
+            raise SceneError(f"{leftover} 裡已經有 level 檔，不覆蓋；先移走再建")
     project = template.project()
     project["iid"] = ""
     project["dummyWorldIid"] = ""

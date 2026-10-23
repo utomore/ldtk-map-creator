@@ -19,6 +19,7 @@ server = MCPServer(
         "生成並微調 LDtk 場景地圖。path 是場景地圖的 .ldtk 主檔路徑；座標以格為單位，"
         "原點在 level 左上角。先用 describe_scene 看有哪些 level、圖層、IntGrid 值與 entity。"
         "會改動地圖的工具都會回傳預覽圖。"
+        "有 <名>.rules.toml 的場景地圖是從規則生成的：微調改規則檔，再呼叫 generate_scene。"
     ),
 )
 
@@ -121,6 +122,16 @@ def delete_entity(path: str, iid: str) -> Reply:
 def render_level(path: str, level: str, scale: int = 2) -> Reply:
     """重新 render 一個 level 的預覽圖，不改動場景地圖。"""
     return _reply(lambda: actions.render_level(Path(path), level, scale=scale))
+
+
+@server.tool()
+def generate_scene(path: str, force: bool = False) -> Reply:
+    """照場景地圖旁的 <名>.rules.toml 生成場景地圖；已經有地圖時重新生成。
+
+    微調一律改規則檔再呼叫這個工具（D-008）。地圖在上次生成之後被直接改過時會拒絕並列出差異；
+    force=True 才蓋掉那些改動。
+    """
+    return _reply(lambda: actions.generate_scene(Path(path), force=force))
 
 
 def main() -> None:

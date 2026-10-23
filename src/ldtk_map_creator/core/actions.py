@@ -14,13 +14,15 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from . import edit, scene
+from . import edit, record, scene
+from . import generate as generation
 from . import render as rendering
 from .derived import cell_count, refresh_derived
 from .errors import SceneError
 from .files import atomic_write
+from .rules import load_rules
 from .scene import SceneMap
 
 ACTIONS = (
@@ -33,6 +35,7 @@ ACTIONS = (
     "move_entity",
     "delete_entity",
     "render_level",
+    "generate_scene",
 )
 """所有操作的名稱；MCP 工具與 CLI 指令跟它一一對應（ENTRY-1）。"""
 
@@ -89,12 +92,15 @@ def _commit(
     summary: str,
     primary: str,
     iid: str | None = None,
+    extra: dict[Path, bytes] | None = None,
 ) -> ActionResult:
     """寫回有變的 level 與它們的預覽圖；失敗時還原磁碟上動過的檔。
 
     - `before` 是操作前每個 level（以 iid 為鍵）的複本；None 表示全部都是新的。
     - `primary` 是這次操作的目標 level：就算內容沒變，也一定回傳它的預覽圖。
+    - `extra` 是同一個交易裡要一起寫的其他檔（例如生成紀錄）。
     """
+    extra = extra or {}
     refresh_derived(target.project)
     levels = target.project["levels"]
     changed = [lv["identifier"] for lv in levels if before is None or before.get(lv["iid"]) != lv]
@@ -110,11 +116,13 @@ def _commit(
     names = {lv["identifier"] for lv in levels}
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
-    touched |= {rendering.preview_path(target, lv) for lv in redraw}
+    touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys()
     saved = _snapshot(touched)
     try:
         scene.save_scene(target, levels=set(changed), refreshed=True)
         previews = tuple(rendering.write_preview(target, lv, image) for lv, image in images.items())
+        for path, data in extra.items():
+            atomic_write(path, data)
     except BaseException:
         _restore(saved)
         raise
@@ -285,3 +293,55 @@ def render_level(path: Path, level: str, *, scale: int = 2) -> ActionResult:
     target = scene.load_scene(path)
     image = rendering.render_level(target, level, scale=scale)
     return ActionResult(f"{level} 的預覽圖", (rendering.write_preview(target, level, image),))
+
+
+@_serialized
+def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
+    """照 `<名>.rules.toml` 生成場景地圖（D-007、D-008）。
+
+    已經有這個場景地圖時是重新生成：先跟上次生成的紀錄比對，被直接改過就拒絕並列出差異；
+    `force=True` 才蓋掉。存法沿用既有的場景地圖，新建時拆開存。
+    """
+    rules = load_rules(record.rules_path(path))
+    previous = record.read_record(path)
+    split = True
+    if path.exists():
+        current = scene.load_scene(path)
+        split = current.split
+        if not force:
+            if previous is None:
+                raise SceneError(
+                    f"{path} 沒有上次生成的紀錄，不知道有沒有被直接改過，不覆蓋；"
+                    "確定要照規則蓋掉就帶 force"
+                )
+            diff = record.differences(previous["content"], record.content(current))
+            if diff:
+                listed = "\n".join(f"- {line}" for line in diff)
+                raise SceneError(
+                    f"{path} 在上次生成之後被直接改過，不覆蓋：\n{listed}\n"
+                    "要保留這些改動，就把它們寫進規則檔；確定要蓋掉就帶 force"
+                )
+    target, placed = generation.generate_scene(rules, path, split=split, overwrite=True)
+    new_record = record.make_record(target, placed)
+    summary = _generate_summary(rules.level_name, rules.level_size, previous, new_record)
+    extra = {record.record_path(path): record.dump(new_record)}
+    return _commit(target, None, summary, rules.level_name, extra=extra)
+
+
+def _generate_summary(
+    level: str, size: tuple[int, int], previous: dict[str, Any] | None, new: dict[str, Any]
+) -> str:
+    changed, added, removed = record.moved(previous, new)
+    count = len(new["elements"])
+    lines = [f"照規則生成 {level}（{size[0]}x{size[1]} 格），{count} 個元素"]
+    if previous is None:
+        return lines[0]
+    if changed:
+        lines.append(f"位置變了：{'、'.join(changed)}")
+    if added:
+        lines.append(f"新的：{'、'.join(added)}")
+    if removed:
+        lines.append(f"拿掉了：{'、'.join(removed)}")
+    if len(lines) == 1:
+        lines.append("沒有元素移動")
+    return "\n".join(lines)

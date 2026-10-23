@@ -16,6 +16,7 @@
 | 方位 | 規則檔裡的東南西北：`side` 指區域在誰的哪一邊，`edge:<方位>` 指 level 的哪一邊；不是 LDtk 的 `__neighbours` 方向 | `Side`、`SIDES` |
 | 格 | level 上一格 IntGrid 的位置或大小，以格為單位、原點在左上角；不是像素 | `Cell` |
 | 生成 | 照規則檔建出一個場景地圖：先配置，再畫進 level；不是 LDtk 的 auto-layer | `generate_scene` |
+| 生成紀錄 | 上次生成的結果，存在 `<名>.generated.json`，重新生成前拿來比對地圖有沒有被直接改過；不是微調紀錄 | `core/record.py` |
 | 配置器 | 照規則算出每個元素佔哪些格、錨點在哪的計算；只算位置，不碰場景地圖 | `layout`、`Layout` |
 | 排列順序 | 配置器排元素的先後：先排固定位置的區域，再排指向的東西都排好了的，路徑優先；只看規則，不看位置 | `placement_order` |
 | 推出的 iid | 由 seed 加名字算出的 iid（uuid5），同規則同 seed 就相同；不是 LDtk 隨機配的 iid | `derived_iid`、`element_iid` |
