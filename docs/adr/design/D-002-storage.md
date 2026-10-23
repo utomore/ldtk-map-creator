@@ -36,4 +36,7 @@ decision-makers: [utomore]
 
 - 拆開存時，引擎的載入器要照 `externalRelPath` 讀 `.ldtkl`；常見的 LDtk 載入器會處理，自寫的要補。
 - 改規則重生會蓋掉已做的微調，M2 要先設計怎麼處理（見 `docs/adr/README.md`「待決定」）。
-- 拆開存的實際格式要用 LDtk 1.5.3 存一份實測確認。
+- 拆開存的格式（LDtk 1.5.3 實測，#3）：
+  - 主檔跟單檔只差 `externalLevels: true`；每個 level 的 `layerInstances` 是 `null`，`externalRelPath` 是相對主檔的路徑，例如 `split/Level_0.ldtkl`。
+  - `.ldtkl` 是完整的 level 物件，多一個 `__header__`，裡面的 `externalRelPath` 是 `null`。
+  - 子資料夾名稱跟主檔同名（不含副檔名）。

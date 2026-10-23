@@ -28,4 +28,8 @@ decision-makers: [utomore]
 ## 三個月後的影響
 
 - 要支援圖塊美術（backlog）時，型別要擴到 tile 與 tileset。
-- 還沒實測：LDtk 開檔會不會重算 auto-layer、會不會修正缺漏欄位；M1 要用 LDtk 1.5.3 驗。
+- 缺欄位容忍（LDtk 1.5.3 實測，#3）：
+  - 拿掉 level、圖層、Entity 實例的 `__` 欄位，以及圖層的 `seed`、`optionalRules`、根層的 `toc` 等欄位，LDtk 照樣正常打開、畫面正確。
+  - 存檔時只補回根層欄位；沒改動的 level 原樣寫回，缺的 `__` 欄位不會補。
+  - 所以不能靠 LDtk 修檔：每個欄位都由程式補齊，引擎讀到的 `__` 欄位才可靠。
+- auto-layer 會不會重算沒有實測，移到 backlog「地圖擺放圖塊美術」。
