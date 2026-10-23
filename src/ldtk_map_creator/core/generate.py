@@ -15,6 +15,10 @@ from .rules import Rules
 from .scene import SceneMap, add_level, new_scene
 
 
+def _entity_count(scene: SceneMap, level: str) -> int:
+    return sum(len(ly["entityInstances"]) for ly in scene.level(level)["layerInstances"] or [])
+
+
 def element_iid(seed: int, name: str) -> str:
     """元素產生的 entity 的 iid。"""
     return derived_iid(seed, f"element:{name}")
@@ -43,12 +47,14 @@ def generate_scene(rules: Rules, path: Path, *, split: bool = True) -> tuple[Sce
         paint_cells(scene, name, cells=sorted(cells), value=value[kind[element]])
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
+        before = _entity_count(scene, name)
         try:
             instance = place_entity(scene, name, entity.type, x=x, y=y)
         except SceneError as error:
+            # 位置由配置器保證在 level 內；剩下會失敗的都出在 entity 定義（不存在、欄位、標籤、toc）
             raise SceneError(f"{entity.name}.type：{error}") from error
-        if instance["iid"] in {element_iid(rules.seed, e.name) for e in rules.entities}:
-            # 碰到 maxCount 被挪走的是先前擺的 entity
+        if _entity_count(scene, name) != before + 1:
+            # 到了 maxCount，先前擺的 entity 被挪走或丟掉
             raise SceneError(f"{entity.name}.type：{entity.type} 的數量到上限了")
         instance["iid"] = element_iid(rules.seed, entity.name)
 

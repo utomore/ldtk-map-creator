@@ -3,7 +3,8 @@
 - 排列順序：先排固定位置的區域（照檔案順序）；再排指向的東西都排好了的元素，
   路徑優先，同種照檔案順序；entity 最後擺。
 - 每個元素用 seed 加自己的名字當亂數種子；改一個元素，其他元素的亂數不受影響。
-- 區域彼此至少隔 1 格；跟路徑只要不重疊。
+- 靠近別人的區域跟其他區域至少隔 1 格（彼此靠近的兩個除外）；固定位置的區域只檢查不重疊；
+  跟路徑只要不重疊。
 - 排不下一律丟 SceneError，訊息開頭是出錯的元素與欄位。
 """
 
@@ -12,11 +13,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .errors import SceneError
-from .rules import AreaRule, Cell, PathRule, Rules, Side
+from .rules import EDGE, AreaRule, Cell, PathRule, Rules, Side
 
 Rect = tuple[int, int, int, int]  # x, y, 寬, 高（格）
 Placeable = AreaRule | PathRule
-_EDGE = "edge:"
 _SIDE_NAMES: dict[str, str] = {"north": "北", "east": "東", "south": "南", "west": "西"}
 
 
@@ -41,8 +41,12 @@ def placement_order(rules: Rules) -> tuple[Placeable, ...]:
     order = list(fixed)
     placed = {e.name for e in fixed}
     while rest:
-        # 規則檔讀進來時已經擋掉成環，所以每一輪一定有元素可以排
-        ready = next(e for e in rest if set(_targets(e)) <= placed)
+        # 從規則檔讀進來的不會成環；直接組出來的 Rules 可能會，照樣報成 SceneError
+        ready = next((e for e in rest if set(_targets(e)) <= placed), None)
+        if ready is None:
+            stuck = rest[0]
+            field = "near" if isinstance(stuck, AreaRule) else "from"
+            raise SceneError(f"{stuck.name}.{field}：指向的元素不存在或互相指向成環，排不出來")
         rest.remove(ready)
         order.append(ready)
         placed.add(ready.name)
@@ -59,7 +63,7 @@ def layout(rules: Rules) -> Layout:
         if isinstance(element, AreaRule):
             rect, pushed = _place_area(element, grid, rng)
             cells = _rect_cells(rect)
-            anchors[f"{element.name}.center"] = (rect[0] + rect[2] // 2, rect[1] + rect[3] // 2)
+            anchors[f"{element.name}.center"] = _center(rect)
             grid.areas.add(element.name)
         else:
             cells, start, end, pushed = _place_path(element, grid, rng)
@@ -83,7 +87,7 @@ def layout(rules: Rules) -> Layout:
 def _targets(element: Placeable) -> tuple[str, ...]:
     if isinstance(element, AreaRule):
         return (element.near,) if element.near else ()
-    if element.to.startswith(_EDGE):
+    if element.to.startswith(EDGE):
         return (element.start,)
     return (element.start, element.to)
 
@@ -141,18 +145,13 @@ def _place_area(area: AreaRule, grid: _Grid, rng: random.Random) -> tuple[Rect, 
         return rect, set()
 
     assert area.near is not None
-    tx, ty, tw, th = grid.bbox(area.near)
+    target = grid.cells[area.near]
     gap = area.gap
     every: list[Side] = ["north", "east", "south", "west"]
-    sides = [area.side] if area.side else rng.sample(every, 4)
+    sides: list[Side] = [area.side] if area.side else rng.sample(every, 4)
     pushed: set[str] = set()
     for side in sides:
-        if side in ("north", "south"):
-            y = ty - gap - h if side == "north" else ty + th + gap
-            spots = [(x, y) for x in range(tx - w + 1, tx + tw)]
-        else:
-            x = tx - gap - w if side == "west" else tx + tw + gap
-            spots = [(x, y) for y in range(ty - h + 1, ty + th)]
+        spots = _near_spots(target, (w, h), gap, side)
         rng.shuffle(spots)
         for x, y in spots:
             rect = (x, y, w, h)
@@ -165,6 +164,36 @@ def _place_area(area: AreaRule, grid: _Grid, rng: random.Random) -> tuple[Rect, 
             return rect, pushed
     where = f"{area.near} 的{_SIDE_NAMES[area.side]}邊" if area.side else f"{area.near} 旁邊"
     raise SceneError(f"{area.name}.near：在 {where}排不下 {w}x{h}（gap {gap}）")
+
+
+def _near_spots(target: frozenset[Cell], size: Cell, gap: int, side: Side) -> list[Cell]:
+    """在對象的某一邊、剛好隔 gap 格的位置（左上角），照座標排好。
+
+    看對象實際佔的格，不看外框：L 形路徑旁邊也排得進去。
+    """
+    w, h = size
+    spots: set[Cell] = set()
+    for cx, cy in target:
+        if side == "north":
+            spots.update((x, cy - gap - h) for x in range(cx - w + 1, cx + 1))
+        elif side == "south":
+            spots.update((x, cy + gap + 1) for x in range(cx - w + 1, cx + 1))
+        elif side == "west":
+            spots.update((cx - gap - w, y) for y in range(cy - h + 1, cy + 1))
+        else:
+            spots.update((cx + gap + 1, y) for y in range(cy - h + 1, cy + 1))
+
+    def clear(x: int, y: int) -> bool:
+        # 區域本身與中間隔開的 gap 格都不能碰到對象
+        band = {
+            "north": (x, y + h, w, gap),
+            "south": (x, y - gap, w, gap),
+            "west": (x + w, y, gap, h),
+            "east": (x - gap, y, gap, h),
+        }[side]
+        return not (_rect_cells((x, y, w, h)) | _rect_cells(band)) & target
+
+    return sorted(s for s in spots if clear(*s))
 
 
 def _area_blockers(rect: Rect, grid: _Grid, target: str) -> set[str]:
@@ -182,7 +211,7 @@ def _area_blockers(rect: Rect, grid: _Grid, target: str) -> set[str]:
 def _place_path(
     path: PathRule, grid: _Grid, rng: random.Random
 ) -> tuple[frozenset[Cell], Cell, Cell, set[str]]:
-    if path.to.startswith(_EDGE):
+    if path.to.startswith(EDGE):
         return _edge_path(path, grid)
     return _link_path(path, grid, rng)
 
@@ -192,7 +221,7 @@ def _edge_path(path: PathRule, grid: _Grid) -> tuple[frozenset[Cell], Cell, Cell
 
     座標換成「順著路」與「橫過路」兩軸：南北向的路順著 y，東西向的順著 x。
     """
-    side = path.to.removeprefix(_EDGE)
+    side = path.to.removeprefix(EDGE)
     vertical = side in ("north", "south")
     forward = side in ("south", "east")
 
@@ -249,13 +278,15 @@ def _link_path(
         line = _l_line(a, b, shape)
         on_line = [c for c in line if c not in ends]
         if not on_line:
-            raise SceneError(f"{path.name}.to：{path.start} 跟 {path.to} 已經相接，路徑沒有格")
+            continue  # 這種形狀整條落在兩端裡，換另一種
         cells = frozenset(c for c in _thicken(line, path.width, grid) if c not in ends)
         blockers = grid.owners(cells)
         if blockers:
             pushed |= blockers
             continue
         return cells, on_line[0], on_line[-1], pushed
+    if not pushed:
+        raise SceneError(f"{path.name}.to：{path.start} 跟 {path.to} 已經相接，路徑沒有格")
     blocked = "、".join(sorted(pushed))
     raise SceneError(f"{path.name}.to：從 {path.start} 到 {path.to} 的路都被 {blocked} 擋住")
 

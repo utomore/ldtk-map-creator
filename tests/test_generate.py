@@ -8,10 +8,21 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from ldtk_map_creator.core import template
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import element_iid, generate_scene
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
-from ldtk_map_creator.core.rules import SIDES, AreaRule, Kind, PathRule, Rules, load_rules
+from ldtk_map_creator.core.model import Project
+from ldtk_map_creator.core.rules import (
+    SIDES,
+    AreaRule,
+    EntityRule,
+    Kind,
+    PathRule,
+    Rules,
+    Side,
+    load_rules,
+)
 from ldtk_map_creator.core.scene import load_scene, save_scene
 from tests.ldtk_schema import level_file_errors, load_json, project_errors
 from tests.rule_strategies import rules, village_rules
@@ -21,6 +32,8 @@ EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
 # 通用的規則偏稀疏；混進像村莊的規則，才常有靠近別人、被擠開的區域
 spawn_rules = village_rules() | rules(entity_types=st.just("Spawn"), max_area=6)
 STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+# 區域在對象的哪一邊，就往反方向推才碰得到對象
+DIRECTIONS = {"north": (0, 1), "south": (0, -1), "west": (1, 0), "east": (-1, 0)}
 
 
 def _try_layout(r: Rules) -> Layout | None:
@@ -87,16 +100,18 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         for cell in ring:
             other = owner.get(cell)
             assert other is None or other in partners or other not in areas, (area.name, other)
-        # 跟靠近的對象剛好隔 gap 格
-        tx, ty, tw, th = _bbox(placed.cells[area.near])
-        gaps = {
-            "north": ty - (y + h),
-            "south": y - (ty + th),
-            "west": tx - (x + w),
-            "east": x - (tx + tw),
-        }
-        sides = [s for s, g in gaps.items() if g == area.gap]
-        assert sides and (area.side is None or area.side in sides), (area.name, gaps)
+        # 跟靠近的對象剛好隔 gap 格：往那一邊推 gap + 1 格就碰到對象，中間的 gap 格碰不到
+        target = placed.cells[area.near]
+        rect = {(cx, cy) for cx in range(x, x + w) for cy in range(y, y + h)}
+        sides = [
+            s
+            for s, (dx, dy) in DIRECTIONS.items()
+            if {(cx + dx * (area.gap + 1), cy + dy * (area.gap + 1)) for cx, cy in rect} & target
+            and not any(
+                (cx + dx * k, cy + dy * k) in target for cx, cy in rect for k in range(area.gap + 1)
+            )
+        ]
+        assert sides and (area.side is None or area.side in sides), (area.name, sides)
 
     def touches(cells: frozenset[tuple[int, int]], others: frozenset[tuple[int, int]]) -> bool:
         return any((x + dx, y + dy) in others for x, y in cells for dx, dy in STEPS)
@@ -295,3 +310,83 @@ def test_example_edge_path_from_l_shaped_path() -> None:
         placed = layout(r)
         branch, link = placed.cells["branch"], placed.cells["link"]
         assert any((x - 1, y) in link for x, y in branch), seed
+
+
+def _two_areas(seed: int, a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> Rules:
+    return Rules(
+        seed,
+        "L",
+        (20, 20),
+        (Kind("k", 1, "#000000"),),
+        (
+            AreaRule("a", "k", (a[2], a[3]), at=(a[0], a[1])),
+            AreaRule("b", "k", (b[2], b[3]), at=(b[0], b[1])),
+        ),
+        (PathRule("link", "k", "a", "b"),),
+        (),
+    )
+
+
+def test_example_area_near_long_l_shaped_path() -> None:
+    """曾經壞過的地方：靠近 L 形路徑的區域要貼著路排，不是貼著路的外框（外框幾乎蓋滿 level）。"""
+    for seed in range(10):
+        base = _two_areas(seed, (0, 0, 1, 1), (19, 19, 1, 1))
+        house = AreaRule("house", "k", (2, 2), near="link", gap=1)
+        placed = layout(dataclasses.replace(base, areas=(*base.areas, house)))
+        x, y, _, _ = _bbox(placed.cells["house"])
+        road = placed.cells["link"]
+        assert min(abs(x - rx) + abs(y - ry) for rx, ry in road) <= 4, seed
+
+
+def test_example_link_path_tries_the_other_shape() -> None:
+    """曾經壞過的地方：一種 L 形整條落在兩端裡時，要改試另一種，不看亂數先抽到哪一種。"""
+    for seed in range(10):
+        placed = layout(_two_areas(seed, (0, 0, 2, 2), (2, 1, 2, 4)))
+        assert placed.cells["link"], seed
+
+
+def test_example_unparsed_cycle_is_scene_error() -> None:
+    """沒經過規則檔檢查、直接組出來的成環規則，也丟 SceneError，不丟 StopIteration。"""
+    r = Rules(
+        1,
+        "L",
+        (10, 10),
+        (Kind("k", 1, "#000000"),),
+        (AreaRule("x", "k", (1, 1), near="y"), AreaRule("y", "k", (1, 1), near="x")),
+        (),
+        (),
+    )
+    with pytest.raises(SceneError, match=r"^x\.near"):
+        layout(r)
+
+
+@pytest.mark.parametrize("behavior", ["MoveLastOne", "DiscardOldOnes", "PreventAdding"])
+def test_example_entity_max_count(
+    behavior: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """entity 定義有數量上限時，擺不下的報錯，不悄悄挪走或丟掉先前擺的。"""
+    original = template.project
+
+    def limited() -> Project:
+        project = original()
+        spawn = project["defs"]["entities"][0]
+        spawn["maxCount"], spawn["limitBehavior"] = 1, behavior
+        return project
+
+    monkeypatch.setattr(template, "project", limited)
+    r = load_rules(EXAMPLE)
+    second = EntityRule("spawn_2", "Spawn", "plaza.center")
+    r = dataclasses.replace(r, entities=(*r.entities, second))
+    with pytest.raises(SceneError, match=r"^spawn_2\.type"):
+        generate_scene(r, tmp_path / "scene.ldtk")
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_example_every_side_has_room(side: Side) -> None:
+    """典型：廣場四周都空著時，指定哪一邊就排在哪一邊。"""
+    base = _two_areas(0, (9, 9, 2, 2), (0, 0, 1, 1))
+    house = AreaRule("house", "k", (3, 2), near="a", side=side, gap=2)
+    placed = layout(dataclasses.replace(base, areas=(*base.areas, house), paths=()))
+    hx, hy, hw, hh = _bbox(placed.cells["house"])
+    gaps = {"north": 9 - (hy + hh), "south": hy - 11, "west": 9 - (hx + hw), "east": hx - 11}
+    assert gaps[side] == 2

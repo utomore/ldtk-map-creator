@@ -63,7 +63,7 @@ def rules(
             st.sampled_from(["area", "path", "entity"] if targets else ["area", "entity"])
         )
         if choice == "area":
-            cap = max_area or max(width, height)
+            cap = max_area if max_area is not None else max(width, height)
             w, h = draw(st.integers(1, min(width, cap))), draw(st.integers(1, min(height, cap)))
             if targets and draw(st.booleans()):
                 area = AreaRule(

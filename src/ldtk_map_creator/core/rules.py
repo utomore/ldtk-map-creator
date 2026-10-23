@@ -18,7 +18,7 @@ SIDES: tuple[Side, ...] = ("north", "east", "south", "west")
 Cell = tuple[int, int]
 
 _COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
-_EDGE = "edge:"
+EDGE = "edge:"
 # 每種元素提供的錨點：`<元素名>.<錨點>`
 AREA_ANCHORS = ("center",)
 PATH_ANCHORS = ("start", "end")
@@ -147,8 +147,8 @@ def _path(raw: object, where: str) -> PathRule:
     kind = _name(table["kind"], f"{name}.kind")
     start = _name(table["from"], f"{name}.from")
     to = _str(table["to"], f"{name}.to")
-    if to.startswith(_EDGE):
-        if to.removeprefix(_EDGE) not in SIDES:
+    if to.startswith(EDGE):
+        if to.removeprefix(EDGE) not in SIDES:
             raise SceneError(f"{name}.to：邊要是 edge:{'、edge:'.join(SIDES)} 其中一個：{to!r}")
     else:
         _name(to, f"{name}.to")
@@ -222,7 +222,7 @@ def _check_links(rules: Rules) -> None:
         if path.width > path_width_limit(path, rules.level_size):
             raise SceneError(f"{path.name}.width：{path.width} 比 level 的 {width}x{height} 寬")
         target(path.start, f"{path.name}.from")
-        if not path.to.startswith(_EDGE):
+        if not path.to.startswith(EDGE):
             target(path.to, f"{path.name}.to")
             if path.to == path.start:
                 raise SceneError(f"{path.name}.to：起點與終點是同一個元素 {path.to}")
@@ -242,7 +242,7 @@ def path_width_limit(path: PathRule, level_size: Cell) -> int:
     兩個元素之間的路徑方向要排了才知道，只擋兩個方向都放不下的。
     """
     width, height = level_size
-    side = path.to.removeprefix(_EDGE) if path.to.startswith(_EDGE) else None
+    side = path.to.removeprefix(EDGE) if path.to.startswith(EDGE) else None
     if side in ("north", "south"):
         return width
     if side in ("east", "west"):
@@ -262,7 +262,7 @@ def _check_cycles(rules: Rules) -> None:
         edges[area.name] = [(area.near, "near")] if area.near else []
     for path in rules.paths:
         edges[path.name] = [(path.start, "from")]
-        if not path.to.startswith(_EDGE):
+        if not path.to.startswith(EDGE):
             edges[path.name].append((path.to, "to"))
 
     # 不用遞迴：參照鏈很長時也不會超過 Python 的遞迴上限
