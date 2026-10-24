@@ -26,6 +26,7 @@ decision-makers: [utomore]
 
 - `<名>.rules.toml` 用宣告式。
 - M2 只做三種元素：`[[area]]`、`[[path]]`、`[[entity]]`；每個元素有唯一的 `name`。
+- `[[entity]]` 可以用 `size`（格）指定這個實例的大小、用 `offset`（像素）指定它在那一格裡的位置，整個矩形要在 level 內（D-014）。
 - 每個元素用 seed 加自己的名字當亂數種子；改一個元素，其他元素的亂數不受影響。
 - 生成器產生的 iid 由 seed 加元素名稱推出（uuid5）；同規則同 seed，生成結果連 iid 都相同。
 - 用工具手動擺的 entity，iid 照舊隨機。

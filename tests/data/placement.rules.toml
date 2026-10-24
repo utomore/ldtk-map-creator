@@ -1,0 +1,91 @@
+# 範例規則檔：實體與傳送點指定位置與大小、改分層慣例 entity 的顏色與 tags、固定存成單檔（D-014）。
+seed = 49
+grid = 96     # 一格 96 像素
+split = false # 一律存成單檔，不看磁碟上原本怎麼存（D-002）
+
+[[level]]
+name = "Home"
+size = [10, 8]
+
+[[level]]
+name = "Farm"
+size = [40, 20]
+at = [12, 0]
+
+[grounds]
+dirt = { value = 1, color = "#C8B27A" }
+
+[collisions]
+wall = { value = 1, color = "#625565" }
+
+[kinds]
+floor = { ground = "dirt" }
+plot = { ground = "dirt", collision = "wall" }
+
+# 分層慣例的 Teleport 只能改 color 與 tags；大小與欄位固定（D-011）
+[entity_types]
+Teleport = { color = "#30e1b9", tags = ["tele"] }
+House = { color = "#b33831", size = [384, 288] } # 像素：預設 4×3 格
+Scout = { color = "#f9c22b", size = [8, 8] } # 像素：比一格小的類型
+
+[[area]]
+name = "home_floor"
+level = "Home"
+kind = "floor"
+size = [10, 8]
+at = [0, 0]
+
+[[area]]
+name = "farm_plot"
+level = "Farm"
+kind = "plot"
+size = [16, 9]
+at = [8, 8]
+
+# offset（像素）：出生點在 (4, 3) 那一格往右 48、往下 72，絕對位置 (432, 360)
+[[entity]]
+name = "spawn"
+type = "PlayerSpawn"
+level = "Home"
+at = [4, 3]
+offset = [48, 72]
+
+# 比一格小的實例：宣告一個像素大小的類型，再用 offset 擺進那一格
+[[entity]]
+name = "scout"
+type = "Scout"
+level = "Home"
+at = [6, 5]
+offset = [48, 72]
+
+# 沒寫 size 的房子是類型的大小（4×3 格）；size（格）逐個指定
+[[entity]]
+name = "house_a"
+type = "House"
+level = "Farm"
+at = [2, 2]
+
+[[entity]]
+name = "house_b"
+type = "House"
+level = "Farm"
+at = [8, 2]
+size = [3, 3]
+
+[[entity]]
+name = "house_c"
+type = "House"
+level = "Farm"
+at = [13, 2]
+size = [6, 3]
+
+# 固定端點：位置與大小（格）都寫死；兩端各擺一個 Teleport
+[[portal]]
+name = "home_door"
+from = { level = "Home", at = [0, 3], size = [1, 3] }
+to = { level = "Farm", at = [0, 10], size = [1, 3] }
+
+[[portal]]
+name = "farm_south"
+from = { level = "Farm", at = [18, 19], size = [3, 1] }
+to = { level = "Home", at = [3, 7], size = [3, 1] }

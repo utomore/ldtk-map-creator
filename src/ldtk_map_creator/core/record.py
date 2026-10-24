@@ -136,6 +136,7 @@ def make_record(
     """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素與 level 的位置（用來說誰移動了），
     以及每個 level 的預覽圖要寫的元素名稱。`shapes` 是 entity 的類型與欄位值
     （元素名稱 → 類型加上有寫的欄位），只換類型或欄位值時也算變了；沒有欄位值的不多記一項。
+    寫了 `size` 或 `offset` 的 entity 多記一項（D-014）。
     帶零件的區域也有一項：零件名稱與方向（D-013）。
     """
     shapes = shapes or {}
@@ -145,8 +146,16 @@ def make_record(
         elements[name] = _digest([placed.level_of[name], sorted(cells), *shapes.get(name, [])])
     for name, cell in placed.entities.items():
         elements[name] = _digest([placed.level_of[name], [cell], *shapes.get(name, [None])])
+    # 固定端點的大小也算（D-014）；一格的端點跟以前的寫法一樣
     portals = {
-        name: _digest([[level, [cell]] for level, cell in ends])
+        name: _digest(
+            [
+                [level, [cell], *([list(size)] if size != (1, 1) else [])]
+                for (level, cell), size in zip(
+                    ends, placed.portal_sizes.get(name, ((1, 1), (1, 1))), strict=True
+                )
+            ]
+        )
         for name, ends in placed.portals.items()
     }
     levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}

@@ -102,13 +102,19 @@ class PathRule:
 
 @dataclass(frozen=True)
 class EntityRule:
-    """entity：擺在一個錨點，或固定的格；`fields` 是帶的欄位值（照檔案順序），沒寫的用預設值。"""
+    """entity：擺在一個錨點，或固定的格；`fields` 是帶的欄位值（照檔案順序），沒寫的用預設值。
+
+    `size`（格）是這個實例的大小，沒寫就是類型定義的大小；`offset`（像素）是實例在那一格裡
+    往右下位移多少，沒寫是 (0, 0)（D-014）。
+    """
 
     name: str
     type: str
     at: str | Cell
     level: str | None = None
     fields: tuple[tuple[str, object], ...] = ()
+    size: Cell | None = None
+    offset: Cell = (0, 0)
 
 
 @dataclass(frozen=True)
@@ -123,12 +129,36 @@ class EntityType:
 
 
 @dataclass(frozen=True)
+class FixedEnd:
+    """傳送點的固定端點（D-014）：level、左上角的格、大小（格），不靠區域或路徑的錨點。
+
+    `level` 是 None 時在第一個 level（只有一個 level 時可以不寫）。
+    """
+
+    level: str | None
+    at: Cell
+    size: Cell = (1, 1)
+
+
+@dataclass(frozen=True)
 class PortalRule:
-    """傳送點（D-010、D-011）：兩個錨點各擺一個 `Teleport`，用 `targetPort` 互指。"""
+    """傳送點（D-010、D-011）：兩端各擺一個 `Teleport`，用 `targetPort` 互指。
+
+    端點是錨點（字串，例如 `house_1.south`），或固定的位置與大小（D-014）。
+    """
 
     name: str
-    start: str
-    to: str
+    start: str | FixedEnd
+    to: str | FixedEnd
+
+
+@dataclass(frozen=True)
+class ConventionOverride:
+    """覆寫分層慣例 entity 的外觀（D-014）：只有顏色與 tags；沒寫的維持範本的值。"""
+
+    name: str
+    color: str | None = None
+    tags: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +176,8 @@ class Rules:
     grounds: tuple[LayerValue, ...] = ()
     collisions: tuple[LayerValue, ...] = ()
     grid: int = DEFAULT_GRID  # 格子大小（像素）；生成的專案檔、entity 與 level 的像素都照它
+    overrides: tuple[ConventionOverride, ...] = ()  # 分層慣例 entity 的顏色與 tags（D-014）
+    split: bool | None = None  # 生成後的存法：True 拆開、False 單檔、None 沿用磁碟上的（D-014）
 
     @property
     def level_name(self) -> str:
@@ -165,6 +197,16 @@ class Rules:
             raise SceneError(f"{element.name}.level：沒有叫 {name} 的 level")
         return found
 
+    def end_level(self, end: FixedEnd, where: str) -> LevelRule:
+        """固定端點在哪個 level；沒寫就是第一個，有好幾個 level 時一定要寫。`where` 是訊息開頭。"""
+        if end.level is None and len(self.levels) != 1:
+            raise SceneError(f"{where}.level：有好幾個 level 時要寫在哪個 level")
+        name = end.level or self.level_name
+        found = next((lv for lv in self.levels if lv.name == name), None)
+        if found is None:
+            raise SceneError(f"{where}.level：沒有叫 {name} 的 level")
+        return found
+
 
 def load_rules(path: Path) -> Rules:
     """讀一份規則檔；讀不了或寫錯都丟 SceneError。"""
@@ -181,6 +223,7 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     """把 TOML 讀出的資料檢查後轉成規則資料。"""
     optional = {
         "grid",
+        "split",
         "grounds",
         "collisions",
         "kinds",
@@ -193,15 +236,17 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     _keys(data, "規則檔", required={"seed", "level"}, optional=optional)
     seed = _int(data["seed"], "seed")
     grid = _int(data.get("grid", DEFAULT_GRID), "grid", minimum=1, maximum=MAX_GRID)
+    split = _bool(data["split"], "split") if "split" in data else None
     levels = _levels(data["level"])
     grounds = _layer_values(data.get("grounds", {}), "grounds")
     collisions = _layer_values(data.get("collisions", {}), "collisions")
     kinds = _kinds(data.get("kinds", {}), grounds, collisions)
-    entity_types = _entity_types(data.get("entity_types", {}), grid)
+    entity_types, overrides = _entity_types(data.get("entity_types", {}), grid)
     areas = tuple(_area(a, f"area[{i}]") for i, a in enumerate(_tables(data, "area")))
     paths = tuple(_path(p, f"path[{i}]") for i, p in enumerate(_tables(data, "path")))
     entities = tuple(
-        _entity(e, f"entity[{i}]", entity_types) for i, e in enumerate(_tables(data, "entity"))
+        _entity(e, f"entity[{i}]", entity_types, grid)
+        for i, e in enumerate(_tables(data, "entity"))
     )
     portals = tuple(_portal(p, f"portal[{i}]") for i, p in enumerate(_tables(data, "portal")))
     rules = Rules(
@@ -216,6 +261,8 @@ def parse_rules(data: dict[str, Any]) -> Rules:
         grounds,
         collisions,
         grid,
+        overrides,
+        split,
     )
     _check_levels(rules)
     _check_links(rules)
@@ -355,19 +402,22 @@ def _path(raw: object, where: str) -> PathRule:
     return PathRule(name, kind, start, to, width, level=_optional_name(table, "level", name))
 
 
-def _entity(raw: object, where: str, types: tuple[EntityType, ...]) -> EntityRule:
+def _entity(raw: object, where: str, types: tuple[EntityType, ...], grid: int) -> EntityRule:
     table = _table(raw, where)
     name = _element_name(table, where)
-    _keys(table, name, required={"name", "type", "at"}, optional={"level", "fields"})
+    optional = {"level", "fields", "size", "offset"}
+    _keys(table, name, required={"name", "type", "at"}, optional=optional)
     entity_type = _name(table["type"], f"{name}.type")
     level = _optional_name(table, "level", name)
     values = _field_values(table.get("fields", {}), name, entity_type, types)
     _check_convention_entity(name, entity_type, dict(values))
+    size = _size(table["size"], f"{name}.size") if "size" in table else None
+    offset = _offset(table["offset"], f"{name}.offset", grid) if "offset" in table else (0, 0)
     at = table["at"]
     if isinstance(at, str):
-        return EntityRule(name, entity_type, at, level=level, fields=values)
+        return EntityRule(name, entity_type, at, level, values, size, offset)
     cell = _cell(at, f"{name}.at", '錨點（例如 "road.end"）或 [x, y]')
-    return EntityRule(name, entity_type, cell, level=level, fields=values)
+    return EntityRule(name, entity_type, cell, level, values, size, offset)
 
 
 def _field_values(
@@ -422,22 +472,45 @@ def _portal(raw: object, where: str) -> PortalRule:
     if "type" in table:
         raise SceneError(f"{name}.type：傳送點一律是 {convention.TELEPORT}（D-011），不用寫 type")
     _keys(table, name, required={"name", "from", "to"})
-    start = _str(table["from"], f"{name}.from")
-    to = _str(table["to"], f"{name}.to")
+    start = _end(table["from"], f"{name}.from")
+    to = _end(table["to"], f"{name}.to")
     return PortalRule(name, start, to)
 
 
-def _entity_types(raw: object, grid: int) -> tuple[EntityType, ...]:
+def _end(value: object, where: str) -> str | FixedEnd:
+    """傳送點的一端：錨點（字串），或固定的位置與大小 `{ level, at, size }`（D-014）。"""
+    if not isinstance(value, dict):
+        return _str(value, where)
+    table = cast(dict[str, Any], value)
+    _keys(table, where, required={"at"}, optional={"level", "size"})
+    level = _optional_name(table, "level", where)
+    at = _cell(table["at"], f"{where}.at", "[x, y]")
+    size = _size(table["size"], f"{where}.size") if "size" in table else (1, 1)
+    return FixedEnd(level, at, size)
+
+
+def _entity_types(
+    raw: object, grid: int
+) -> tuple[tuple[EntityType, ...], tuple[ConventionOverride, ...]]:
+    """`[entity_types]`：遊戲自己的類型，加上分層慣例 entity 的覆寫（D-014）。"""
     found: list[EntityType] = []
-    # 範本已經有的 entity 定義（分層慣例的三種，D-011）照舊能用，宣告的類型不能跟它們同名
-    builtin = {name.lower() for name in template.entity_identifiers()}
+    overrides: list[ConventionOverride] = []
+    # 範本已經有的 entity 定義（分層慣例的三種，D-011）：寫同名的是覆寫它的顏色與 tags
+    builtin = {name.lower(): name for name in template.entity_identifiers()}
     for name, value in _table(raw, "entity_types").items():
         where = f"entity_types.{name}"
         _name(name, where)
-        if any(t.name.lower() == name.lower() for t in found):
+        if any(t.name.lower() == name.lower() for t in found) or any(
+            o.name.lower() == name.lower() for o in overrides
+        ):
             raise SceneError(f"{where}：類型名稱重複（不分大小寫）")
         if name.lower() in builtin:
-            raise SceneError(f"{where}：範本已經有 {name} 這個 entity 定義，換個名字")
+            if name != builtin[name.lower()]:
+                raise SceneError(
+                    f"{where}：範本已經有 {builtin[name.lower()]} 這個 entity 定義，名稱分大小寫"
+                )
+            overrides.append(_override(name, _table(value, where), where))
+            continue
         table = _table(value, where)
         _keys(table, where, required=set(), optional={"color", "size", "fields", "tags"})
         color = _str(table.get("color", DEFAULT_ENTITY_COLOR), f"{where}.color")
@@ -455,7 +528,39 @@ def _entity_types(raw: object, grid: int) -> tuple[EntityType, ...]:
             fields.append((field, cast(str, kind)))
         tags = _tags(table.get("tags", []), f"{where}.tags")
         found.append(EntityType(name, color, size, tuple(fields), tags))
-    return tuple(found)
+    return tuple(found), tuple(overrides)
+
+
+def _override(name: str, table: dict[str, Any], where: str) -> ConventionOverride:
+    """分層慣例 entity 的覆寫：只准 `color`、`tags`；大小與欄位固定（D-011、D-014）。"""
+    for key in table:
+        if key not in ("color", "tags"):
+            raise SceneError(f"{where}.{key}：{name} 是分層慣例的 entity，只能覆寫 color 與 tags")
+    if not table:
+        raise SceneError(f"{where}：要寫 color 或 tags，{name} 是分層慣例的 entity")
+    color = _str(table["color"], f"{where}.color") if "color" in table else None
+    tags = _tags(table["tags"], f"{where}.tags") if "tags" in table else None
+    override = ConventionOverride(name, color, tags)
+    check_override(override, where)
+    return override
+
+
+def check_override(override: ConventionOverride, where: str) -> None:
+    """慣例 entity 的覆寫要合法：顏色是 #RRGGBB、tags 不空白不重複、PlayerSpawn 的 tags 有 player。
+
+    讀規則檔時查，生成時也查（直接組出來、沒經過規則檔檢查的規則）。`where` 是訊息開頭。
+    """
+    if override.color is None and override.tags is None:
+        raise SceneError(f"{where}：要寫 color 或 tags，{override.name} 是分層慣例的 entity")
+    if override.color is not None and not _COLOR.fullmatch(override.color):
+        raise SceneError(f'{where}.color：要是 "#RRGGBB"：{override.color!r}')
+    if override.tags is None:
+        return
+    _tags(list(override.tags), f"{where}.tags")
+    if override.name == convention.PLAYER_SPAWN and convention.PLAYER_TAG not in override.tags:
+        raise SceneError(
+            f"{where}.tags：{override.name} 的 tags 要有 {convention.PLAYER_TAG}（D-011）"
+        )
 
 
 def _layer_values(raw: object, section: str) -> tuple[LayerValue, ...]:
@@ -558,7 +663,7 @@ def _check_part_cells(rules: Rules) -> None:
         for a in rules.areas
         if a.kind in kinds and kinds[a.kind].part is not None
     }
-    spots = [(f"{e.name}.at", e.at) for e in rules.entities]
+    spots: list[tuple[str, object]] = [(f"{e.name}.at", e.at) for e in rules.entities]
     for p in rules.portals:
         spots += [(f"{p.name}.from", p.start), (f"{p.name}.to", p.to)]
     for where, at in spots:
@@ -623,23 +728,95 @@ def _check_links(rules: Rules) -> None:
                 raise SceneError(f"{path.name}.to：起點與終點是同一個元素 {path.to}")
     for entity in rules.entities:
         level = level_for(entity)
-        width, height = level.size
         if isinstance(entity.at, tuple):
-            x, y = entity.at
-            if x >= width or y >= height:
-                raise SceneError(f"{entity.name}.at：{entity.at} 超出 level 的 {width}x{height}")
+            check_entity_rect(rules, entity, entity.at)
         elif entity.at not in anchors:
             raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
         elif anchors[entity.at] != level.name:
             where = anchors[entity.at]
             raise SceneError(f"{entity.name}.at：{entity.at} 在 level {where}，不在 {level.name}")
     for portal in rules.portals:
-        for field, anchor in (("from", portal.start), ("to", portal.to)):
-            if anchor not in anchors:
-                raise SceneError(f"{portal.name}.{field}：沒有錨點 {anchor}")
-        if portal.start == portal.to or _same_cell(rules, portal.start, portal.to):
-            raise SceneError(f"{portal.name}.to：兩端是同一格（{portal.start}、{portal.to}）")
+        for field, end in (("from", portal.start), ("to", portal.to)):
+            if isinstance(end, FixedEnd):
+                check_fixed_end(rules, f"{portal.name}.{field}", end)
+            elif end not in anchors:
+                raise SceneError(f"{portal.name}.{field}：沒有錨點 {end}")
+        start, to = portal.start, portal.to
+        if isinstance(start, FixedEnd) and isinstance(to, FixedEnd):
+            first = _fixed_rect(rules, f"{portal.name}.from", start)
+            second = _fixed_rect(rules, f"{portal.name}.to", to)
+            if first[0] == second[0] and rects_overlap(first[1], second[1]):
+                raise SceneError(f"{portal.name}.to：兩端的位置重疊（{start.at}、{to.at}）")
+        elif isinstance(start, str) and isinstance(to, str):
+            if start == to or _same_cell(rules, start, to):
+                raise SceneError(f"{portal.name}.to：兩端是同一格（{start}、{to}）")
     _check_cycles(rules)
+
+
+def entity_size(rules: Rules, entity: EntityRule) -> Cell | None:
+    """entity 實例的大小（像素）：`size`（格）乘以格子大小，沒寫就是類型定義的大小。
+
+    類型不存在（沒宣告、也不是範本的三種）回 None：大小不知道，生成時才會因為類型不存在報錯。
+    """
+    if entity.size is not None:
+        return entity.size[0] * rules.grid, entity.size[1] * rules.grid
+    declared = next((t for t in rules.entity_types if t.name == entity.type), None)
+    if declared is not None:
+        return declared.size
+    if entity.type in template.entity_identifiers():
+        return rules.grid, rules.grid
+    return None
+
+
+def check_entity_rect(rules: Rules, entity: EntityRule, cell: Cell) -> None:
+    """entity 擺在 `cell`（格）時，整個矩形（含 `offset`、`size`）要在它的 level 內（D-014）。
+
+    讀規則檔時查固定的格，配置器再查錨點算出來的格；訊息開頭是 `<元素>.size` 或 `<元素>.at`。
+    """
+    size = entity_size(rules, entity)
+    width, height = rules.level_of(entity).size
+    # 讀規則檔時已經擋過；直接組出來的規則也不能悄悄生成出錯的位置
+    if any(not 0 <= o < rules.grid for o in entity.offset):
+        raise SceneError(
+            f"{entity.name}.offset：兩個數字都要在 0 到 {rules.grid - 1}：{list(entity.offset)}"
+        )
+    if entity.size is not None and min(entity.size) < 1:
+        raise SceneError(f"{entity.name}.size：至少是 1：{list(entity.size)}")
+    if size is None:  # 類型的大小不知道：至少左上角那一格要在 level 內
+        if cell[0] >= width or cell[1] >= height:
+            raise SceneError(f"{entity.name}.at：{cell} 超出 level 的 {width}x{height}")
+        return
+    if entity.size is not None and (entity.size[0] > width or entity.size[1] > height):
+        w, h = entity.size
+        raise SceneError(f"{entity.name}.size：{w}x{h} 比 level 的 {width}x{height} 大")
+    (w, h), grid = size, rules.grid
+    x, y = cell[0] * grid + entity.offset[0], cell[1] * grid + entity.offset[1]
+    if x + w > width * grid or y + h > height * grid:
+        raise SceneError(
+            f"{entity.name}.at：{cell} 加上 offset {entity.offset}、大小 {w}x{h} 像素，"
+            f"會超出 level 的 {width * grid}x{height * grid} 像素"
+        )
+
+
+def _fixed_rect(rules: Rules, where: str, end: FixedEnd) -> tuple[str, tuple[int, int, int, int]]:
+    """固定端點的（level 名稱, 矩形 x、y、寬、高，格）。"""
+    level = rules.end_level(end, where)
+    return level.name, (*end.at, *end.size)
+
+
+def check_fixed_end(rules: Rules, where: str, end: FixedEnd) -> None:
+    """固定端點要在它的 level 內；讀規則檔時查，配置器也查（D-014）。`where` 是訊息開頭。"""
+    level = rules.end_level(end, where)
+    width, height = level.size
+    (x, y), (w, h) = end.at, end.size
+    if min(end.at) < 0:
+        raise SceneError(f"{where}.at：不能是負的：{list(end.at)}")
+    if min(end.size) < 1:
+        raise SceneError(f"{where}.size：至少是 1：{list(end.size)}")
+    if w > width or h > height:
+        raise SceneError(f"{where}.size：{w}x{h} 比 level 的 {width}x{height} 大")
+    if x + w > width or y + h > height:
+        raise SceneError(f"{where}.at：{end.at} 放 {w}x{h} 會超出 level 的 {width}x{height}")
 
 
 def rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
@@ -833,6 +1010,20 @@ def _pair(value: object, where: str, expect: str, minimum: int | None) -> Cell:
         raise SceneError(f"{where}：要是 {expect}：{value!r}")
     a, b = cast(list[object], value)
     return _int(a, where, minimum=minimum), _int(b, where, minimum=minimum)
+
+
+def _bool(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise SceneError(f"{where}：要是 true 或 false：{value!r}")
+    return value
+
+
+def _offset(value: object, where: str, grid: int) -> Cell:
+    """格內的像素位移：兩個整數，各自在 0 到 grid - 1（位移不能把 entity 推出它那一格）。"""
+    x, y = _pair(value, where, "[x, y]", minimum=0)
+    if x >= grid or y >= grid:
+        raise SceneError(f"{where}：兩個數字都要在 0 到 {grid - 1}：{[x, y]}")
+    return x, y
 
 
 def _size(value: object, where: str) -> Cell:

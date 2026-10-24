@@ -22,8 +22,8 @@ decision-makers: [utomore]
 ## 決策
 
 - 規則檔用 `[entity_types]` 宣告 entity 類型：顏色、大小、欄位（欄位型別至少 Int、Float、Bool、String、EntityRef）、tags（字串陣列，沒寫是空的；生成時寫進 entity 定義的 `tags`，實例的 `__tags` 跟著有）。
-- 分層慣例的 entity（`PlayerSpawn`、`Teleport`、`Part`）由 D-011 固定，`[entity_types]` 只宣告遊戲自己的。
-- 傳送點是新的一種元素 `[[portal]]`：`from`、`to` 是兩個錨點，可以在不同 level。
+- 分層慣例的 entity（`PlayerSpawn`、`Teleport`、`Part`）由 D-011 固定，`[entity_types]` 宣告遊戲自己的；用慣例 entity 的名字寫的，只是覆寫它的 `color`、`tags`，大小與欄位不變（D-014）。
+- 傳送點是新的一種元素 `[[portal]]`：`from`、`to` 是兩個端點，可以在不同 level；端點是錨點，或固定的位置與大小（D-014）。
 - 生成時兩邊各擺一個 `Teleport`，`targetPort` 欄位互指（D-011）；iid 由 seed 加元素名稱推出，重新生成引用不斷（D-007）。
 - 區域加上四邊的錨點 `.north`、`.east`、`.south`、`.west`：在區域自己的格裡、那一邊的正中央。
 

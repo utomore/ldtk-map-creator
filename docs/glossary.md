@@ -27,7 +27,12 @@
 | 推出的 iid | 由 seed 加名字算出的 iid（uuid5），同規則同 seed 就相同；不是 LDtk 隨機配的 iid | `derived_iid`、`element_iid` |
 | 擠開 | 配置時一個元素的候選位置被別的元素佔了，只好換位置；記下被誰擠開，用來說明改一個元素會牽動誰 | `pushed_by` |
 | entity 類型 | 規則檔 `[entity_types]` 裡宣告的一種 entity：顏色、大小、欄位與 tags，生成時變成 LDtk 的 entity 定義；不是元素 | `EntityType` |
-| 傳送點 | 規則檔 `[[portal]]` 元素：兩個錨點各擺一個 `Teleport`，用 `targetPort` 互指，可以跨 level，不寫類型（D-011）；不是 PlayerSpawn | `PortalRule` |
+| 傳送點 | 規則檔 `[[portal]]` 元素：兩端各擺一個 `Teleport`，用 `targetPort` 互指，可以跨 level，不寫類型（D-011）；一端是錨點，或固定端點；不是 PlayerSpawn | `PortalRule` |
+| 固定端點 | `[[portal]]` 的 `from`、`to` 寫成 `{ level, at, size }`：位置（格）與大小（格）都寫死的一端，`size` 沒寫是 [1, 1]（D-014）；不是錨點 | `FixedEnd` |
+| 實例大小 | `[[entity]]` 的 `size`（格）：這一個 entity 實例的大小，沒寫就是類型定義的大小（D-014）；不是 `[entity_types]` 的 `size`（像素，類型的預設大小） | `EntityRule.size` |
+| 格內位移 | `[[entity]]` 的 `offset`（像素，各在 0 到 grid - 1）：實例擺在那一格左上角往右下位移後的位置（D-014）；不是格座標 | `EntityRule.offset` |
+| 慣例覆寫 | `[entity_types]` 裡用分層慣例 entity 的名字（`PlayerSpawn`、`Teleport`、`Part`）寫的 `color`、`tags`：只改外觀，名稱、大小與欄位不變（D-014）；不是宣告新類型 | `ConventionOverride`、`Rules.overrides` |
+| 存法指定 | 規則檔頂層的 `split`：生成後一律拆開（`true`）或單檔（`false`），不看磁碟上原本怎麼存（D-014）；沒寫就沿用磁碟上的 | `Rules.split` |
 | 欄位 | entity 上一個有名字、有型別的值（LDtk 的 field），例如傳送點的 `targetPort`；不是規則檔裡元素的欄位 | `FieldDef`、`FieldInstance`、`core/fields.py`；規則檔 `[[entity]]` 帶的欄位值是 `EntityRule.fields` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
 | 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接（D-011）；是下限，其他 LDtk 功能照用；不是某款遊戲專用的層名 | `core/convention.py` |

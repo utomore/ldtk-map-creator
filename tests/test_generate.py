@@ -433,10 +433,11 @@ def test_file_1_generated_scene_matches_schema(r: Rules, split: bool) -> None:
 @settings(max_examples=60, deadline=None)
 @given(fitting_rules, st.integers(1, 128), st.booleans())
 def test_gen_9_grid_sets_every_pixel_size(r: Rules, grid: int, split: bool) -> None:
-    placed = _try_layout(r)
+    sized = dataclasses.replace(r, grid=grid)
+    # 宣告的類型大小是像素：格子變小時，擺在邊上的 entity 可能超出 level（GEN-10），排不下就不測
+    placed = _try_layout(sized)
     assume(placed is not None)
     assert placed is not None
-    sized = dataclasses.replace(r, grid=grid)
     with tempfile.TemporaryDirectory() as tmp:
         scene, _ = generate_scene(sized, Path(tmp) / "scene.ldtk", split=split)
         save_scene(scene)
@@ -879,6 +880,7 @@ def test_gen_8_portals_link_both_ends(r: Rules) -> None:
     for portal in r.portals:
         start, end = portal_iids(r.seed, portal.name)
         (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
+        assert isinstance(portal.start, str) and isinstance(portal.to, str)  # 這個策略只用錨點
         assert (from_level, from_cell) == anchor_spot(portal.start)
         assert (to_level, to_cell) == anchor_spot(portal.to)
         assert where[start][:2] == (from_level, from_cell)  # 擺在錨點上

@@ -20,11 +20,14 @@ from .rules import (
     EDGE,
     AreaRule,
     Cell,
+    FixedEnd,
     LevelRule,
     PathRule,
     Rules,
     Side,
     area_anchor_offset,
+    check_entity_rect,
+    check_fixed_end,
     rects_overlap,
     references,
 )
@@ -54,6 +57,8 @@ class Layout:
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]]
     # 種類帶零件的區域，零件擺在哪一格（區域的 center 錨點，D-013）
     parts: dict[str, Cell] = field(default_factory=lambda: {})
+    # 每個傳送點兩端各佔幾格（寬, 高）：錨點的端點是 (1, 1)，固定端點照寫的大小（D-014）
+    portal_sizes: dict[str, tuple[Cell, Cell]] = field(default_factory=lambda: {})
 
 
 def placement_order(rules: Rules) -> tuple[Placeable, ...]:
@@ -108,12 +113,17 @@ def layout(rules: Rules) -> Layout:
 
     taken: dict[tuple[str, Cell], str] = {}
 
-    def spot_of(label: str, at: str | Cell, level: str | None) -> tuple[str, Cell]:
-        """錨點（或固定的格）換成（level, 格），並佔下那一格。
+    def spot_of(label: str, at: str | Cell | FixedEnd, level: str | None) -> tuple[str, Cell]:
+        """錨點（或固定的格、固定端點）換成（level, 左上角的格），並佔下它的每一格。
 
         `level` 是 entity 所在的 level：錨點要在同一個 level；傳送點給 None，兩端可以跨 level。
+        固定端點自己帶 level 與大小，佔下整個矩形（D-014）。
         """
-        if isinstance(at, tuple):
+        size = at.size if isinstance(at, FixedEnd) else (1, 1)
+        if isinstance(at, FixedEnd):
+            check_fixed_end(rules, label, at)
+            spot = (rules.end_level(at, label).name, at.at)
+        elif isinstance(at, tuple):
             assert level is not None
             spot = (level, at)
         elif at in anchors:
@@ -123,9 +133,13 @@ def layout(rules: Rules) -> Layout:
             spot = (owner, anchors[at])
         else:
             raise SceneError(f"{label}：沒有錨點 {at}")
-        if spot in taken:
-            raise SceneError(f"{label}：跟「{taken[spot]}」擺在同一格 {spot[1]}")
-        taken[spot] = label.removesuffix(".at")
+        (x, y), (w, h) = spot[1], size
+        covered = [(spot[0], (cx, cy)) for cy in range(y, y + h) for cx in range(x, x + w)]
+        for cell in covered:
+            if cell in taken:
+                raise SceneError(f"{label}：跟「{taken[cell]}」擺在同一格 {cell[1]}")
+        for cell in covered:
+            taken[cell] = label.removesuffix(".at")
         return spot
 
     # 區域的零件（D-013）：中心那格是區域的一部分，先佔下；擺到這格的 entity 或傳送點自己報錯
@@ -144,18 +158,28 @@ def layout(rules: Rules) -> Layout:
     for entity in rules.entities:
         level = rules.level_of(entity).name
         _, cell = spot_of(f"{entity.name}.at", entity.at, level)
+        check_entity_rect(rules, entity, cell)  # 錨點算出來的格，這時才知道矩形有沒有出界（D-014）
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
         level_of[entity.name] = level
 
     # 傳送點（D-010）：兩端各一個 entity，不能落在同一格，也不跟別的 entity 擠在同一格
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]] = {}
+    portal_sizes: dict[str, tuple[Cell, Cell]] = {}
     for portal in rules.portals:
         start = spot_of(f"{portal.name}.from", portal.start, None)
         end = spot_of(f"{portal.name}.to", portal.to, None)
         portals[portal.name] = (start, end)
+        portal_sizes[portal.name] = (_end_size(portal.start), _end_size(portal.to))
 
-    return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals, parts)
+    return Layout(
+        cells, anchors, entities, pushed_by, levels, level_of, portals, parts, portal_sizes
+    )
+
+
+def _end_size(end: str | FixedEnd) -> Cell:
+    """傳送點一端佔幾格（寬, 高）：錨點是一格，固定端點照寫的大小。"""
+    return end.size if isinstance(end, FixedEnd) else (1, 1)
 
 
 def place_levels(rules: Rules) -> dict[str, Rect]:

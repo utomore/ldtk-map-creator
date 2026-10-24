@@ -1,5 +1,6 @@
-"""GEN-5、GEN-6：照規則生成的操作，與「被直接改過就擋下來」（D-008）。"""
+"""GEN-5、GEN-6、GEN-13：照規則生成的操作，與「被直接改過就擋下來」（D-008）、存法（D-014）。"""
 
+import dataclasses
 import json
 import shutil
 import tempfile
@@ -24,15 +25,17 @@ from ldtk_map_creator.core.render import (
     world_preview_path,
 )
 from ldtk_map_creator.core.rules import Rules
-from ldtk_map_creator.core.scene import load_scene
+from ldtk_map_creator.core.scene import load_scene, save_scene
 from tests.rule_strategies import (
     placeable_multi_village_rules,
     placeable_village_rules,
+    placement_rules,
     to_toml_text,
 )
 
-# 單一 level 與多個 level 的規則都要測到
-fitting = placeable_village_rules() | placeable_multi_village_rules()
+# 單一 level 與多個 level 的規則都要測到，也包括用到 D-014 寫法的
+fitting = placeable_village_rules() | placeable_multi_village_rules() | placement_rules()
+PLACEMENT = Path(__file__).parent / "data" / "placement.rules.toml"
 
 FAST = settings(max_examples=40, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
@@ -579,3 +582,237 @@ def test_example_kind_part_change_is_listed(tmp_path: Path) -> None:
         rules_file.write_text(parted.replace('part = "house"', change), encoding="utf-8")
         result = actions.generate_scene(path)
         assert "位置或欄位變了：house_1" in result.summary, change
+
+
+def _storage(path: Path) -> tuple[bool, list[str]]:
+    """磁碟上的存法：主檔的 externalLevels，與子資料夾裡的 .ldtkl 檔名。"""
+    folder = path.parent / path.stem
+    levels = sorted(p.name for p in folder.glob("*.ldtkl"))
+    return bool(json.loads(path.read_text(encoding="utf-8"))["externalLevels"]), levels
+
+
+@pytest.mark.law("GEN-13")
+@settings(max_examples=30, deadline=None)
+@given(
+    placement_rules(),
+    st.none() | st.booleans(),
+    st.sampled_from(["fresh", "split", "single", "main_deleted"]),
+)
+def test_gen_13_split_in_rules_decides_storage(r: Rules, wanted: bool | None, disk: str) -> None:
+    """GEN-13 的一條：規則檔的 split、磁碟上原本的存法、主檔在不在，每種組合生成之後的存法。
+
+    拆成兩條測試：這條走操作（讀磁碟、重新生成、不變），另一條只比兩種存法的內容。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "village.ldtk"
+        rules_file = record.rules_path(path)
+        names = sorted(lv.name for lv in r.levels)
+        if disk != "fresh":  # 先用規則檔指定的存法生成，磁碟上原本就是那樣
+            first = dataclasses.replace(r, split=disk == "split")
+            rules_file.write_text(to_toml_text(first), encoding="utf-8")
+            actions.generate_scene(path)
+        if disk == "main_deleted":
+            path.unlink()  # 單檔存的主檔被刪掉：規則檔與生成紀錄還在，沒有主檔可以看存法
+        rules_file.write_text(to_toml_text(dataclasses.replace(r, split=wanted)), encoding="utf-8")
+        actions.generate_scene(path)
+        # 沒指定時沿用磁碟上的；沒有主檔可以看就新建預設的拆開存
+        kept = {"fresh": True, "split": True, "single": False, "main_deleted": True}[disk]
+        expect = kept if wanted is None else wanted
+        assert _storage(path) == (expect, [f"{n}.ldtkl" for n in names] if expect else [])
+        saved = record.read_record(path)
+        assert saved is not None and saved["content"] == record.content(load_scene(path))
+        actions.generate_scene(path)  # 存法沒變時再生成一次，磁碟上的檔完全不變
+        again = _files(Path(tmp))
+        actions.generate_scene(path)
+        assert _files(Path(tmp)) == again
+
+
+@pytest.mark.law("GEN-13")
+@settings(max_examples=15, deadline=None)
+@given(placement_rules())
+def test_gen_13_both_storages_hold_the_same_content(r: Rules) -> None:
+    """GEN-13 的另一條：同一份規則存成拆開與單檔，讀回來的內容除了 externalLevels 都一樣。"""
+    contents: list[dict[str, Any]] = []
+    for split in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "village.ldtk"
+            record.rules_path(path).write_text(
+                to_toml_text(dataclasses.replace(r, split=split)), encoding="utf-8"
+            )
+            actions.generate_scene(path)
+            project = dict(load_scene(path).project)
+            assert project.pop("externalLevels") is split
+            contents.append(project)
+    assert contents[0] == contents[1]
+
+
+def test_example_split_false_survives_deleting_the_main_file(tmp_path: Path) -> None:
+    """F5：單檔存的地圖，主檔被刪掉再生成，規則檔寫了 split = false 就還是單檔（D-014）。"""
+    path = tmp_path / "placement.ldtk"
+    shutil.copy(PLACEMENT, record.rules_path(path))
+    actions.generate_scene(path)
+    assert _storage(path) == (False, [])
+    path.unlink()
+    actions.generate_scene(path)
+    assert _storage(path) == (False, [])
+    assert not (tmp_path / "placement").exists()
+
+
+def test_example_split_changes_from_one_storage_to_the_other(tmp_path: Path) -> None:
+    """典型：原本拆開存的，規則檔改成 split = false 重新生成就變單檔，子資料夾收掉；再改回來。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    split = text.replace("split = false", "split = true")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(split, encoding="utf-8")
+    actions.generate_scene(path)
+    assert _storage(path) == (True, ["Farm.ldtkl", "Home.ldtkl"])
+    rules_file.write_text(text, encoding="utf-8")
+    result = actions.generate_scene(path)
+    assert _storage(path) == (False, []) and not (tmp_path / "placement").exists()
+    assert result.previews  # 預覽圖照常回傳
+    rules_file.write_text(split, encoding="utf-8")
+    actions.generate_scene(path)
+    assert _storage(path) == (True, ["Farm.ldtkl", "Home.ldtkl"])
+
+
+def test_example_failed_conversion_to_single_file_restores_level_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """曾經沒保護的地方：拆開存改成單檔時，中途寫失敗要把刪掉的 .ldtkl 還原。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text.replace("split = false", "split = true"), encoding="utf-8")
+    actions.generate_scene(path)
+    rules_file.write_text(text, encoding="utf-8")
+    before = _files(tmp_path)
+
+    def broken(*_: object) -> Path:
+        raise SceneError("disk full")
+
+    monkeypatch.setattr(rendering, "write_world_preview", broken)
+    with pytest.raises(SceneError, match="disk full"):
+        actions.generate_scene(path)
+    assert _files(tmp_path) == before
+
+
+def test_example_placement_changes_are_listed(tmp_path: Path) -> None:
+    """典型（D-014）：改 entity 的 offset、size、傳送點端點的大小，摘要列出那個元素；改回來也列。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text, encoding="utf-8")
+    actions.generate_scene(path)
+    door = 'from = { level = "Home", at = [0, 3], size = [1, 3] }'
+    changes = {
+        "spawn": text.replace("offset = [48, 72]", "offset = [24, 72]"),
+        "house_b": text.replace("size = [3, 3]", "size = [3, 2]"),
+        "home_door": text.replace(door, door.replace("[1, 3]", "[1, 2]")),
+    }
+    for name, changed in changes.items():
+        assert changed != text, name
+        rules_file.write_text(changed, encoding="utf-8")
+        result = actions.generate_scene(path)
+        assert f"{name}" in result.summary.partition("位置或欄位變了：")[2], name
+        rules_file.write_text(text, encoding="utf-8")
+        result = actions.generate_scene(path)  # 改回來又是一次變動
+        assert f"{name}" in result.summary.partition("位置或欄位變了：")[2], name
+
+
+def test_example_nudging_an_entity_in_ldtk_is_an_edit(tmp_path: Path) -> None:
+    """邊界：在 LDtk 裡把 entity 挪 1 像素，算直接改過，重新生成要擋（紀錄有記像素位置）。"""
+    path = tmp_path / "placement.ldtk"
+    shutil.copy(PLACEMENT, record.rules_path(path))
+    actions.generate_scene(path)
+    target = load_scene(path)
+    for level in target.project["levels"]:
+        for layer in level["layerInstances"] or []:
+            for entity in layer["entityInstances"]:
+                if entity["__identifier"] == "PlayerSpawn":
+                    entity["px"][0] += 1
+    save_scene(target)
+    with pytest.raises(SceneError, match="被直接改過"):
+        actions.generate_scene(path)
+
+
+def test_example_failed_conversion_to_split_removes_the_new_level_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """曾經沒保護的地方：單檔改成拆開存時，中途寫失敗要把新寫的 .ldtkl 與子資料夾都收掉。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text, encoding="utf-8")
+    actions.generate_scene(path)
+    rules_file.write_text(text.replace("split = false", "split = true"), encoding="utf-8")
+    before = _files(tmp_path)
+
+    def broken(*_: object) -> Path:
+        raise SceneError("disk full")
+
+    monkeypatch.setattr(rendering, "write_world_preview", broken)
+    with pytest.raises(SceneError, match="disk full"):
+        actions.generate_scene(path)
+    assert _files(tmp_path) == before
+    assert not (tmp_path / "placement").exists()
+
+
+def test_example_old_style_rules_keep_their_record_digests() -> None:
+    """相容（D-014）：沒用到新寫法的規則檔，生成紀錄裡每個元素與傳送點的 digest 跟以前一樣。
+
+    不一樣的話，升級之後重新生成會把每個元素都報成「位置或欄位變了」。
+    """
+    data = Path(__file__).parent / "data"
+    pinned: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+        "village_house": (
+            {
+                "house_1": "ddc1d7973cb03b23",
+                "oak_1": "8d659979dd125788",
+                "plaza": "2c30f51fb2b2e744",
+                "room": "9822164755940c7d",
+            },
+            {"house_1_door": "a2fba13c787875aa"},
+        ),
+        "village_terrain": (
+            {
+                "hill": "2aea673eed39ffbb",
+                "house_1": "2f08648f090ed7c0",
+                "oak_1": "8d659979dd125788",
+                "oak_2": "78a084901d38ed4e",
+                "plaza": "2c30f51fb2b2e744",
+                "pond": "ced647363ccf879c",
+                "ramp": "eabca16f5b03ef57",
+                "spawn": "fdb96ec8f95aed0d",
+            },
+            {},
+        ),
+    }
+    for name, (elements, portals) in pinned.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "village.ldtk"
+            shutil.copy(data / f"{name}.rules.toml", record.rules_path(path))
+            actions.generate_scene(path)
+            saved = record.read_record(path)
+            assert saved is not None
+            assert (saved["elements"], saved["portals"]) == (elements, portals), name
+
+
+def test_example_split_change_does_not_reuse_foreign_level_files(tmp_path: Path) -> None:
+    """曾經沒保護的地方：單檔改拆開存時，子資料夾裡原有的同名 .ldtkl 要被這次生成的內容蓋掉。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text, encoding="utf-8")
+    actions.generate_scene(path)
+    other = tmp_path / "other.ldtk"  # 別的 seed 生成的同名 level 檔，手動放進子資料夾
+    elsewhere = text.replace("seed = 49", "seed = 7").replace("split = false", "split = true")
+    record.rules_path(other).write_text(elsewhere, encoding="utf-8")
+    actions.generate_scene(other)
+    (tmp_path / "placement").mkdir()
+    shutil.copy(tmp_path / "other" / "Home.ldtkl", tmp_path / "placement" / "Home.ldtkl")
+    rules_file.write_text(text.replace("split = false", "split = true"), encoding="utf-8")
+    actions.generate_scene(path)
+    saved = record.read_record(path)
+    assert saved is not None and saved["content"] == record.content(load_scene(path))
+    actions.generate_scene(path)  # 沒有被擋成「被直接改過」

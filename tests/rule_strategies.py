@@ -15,8 +15,10 @@ from ldtk_map_creator.core.rules import (
     PATH_ANCHORS,
     SIDES,
     AreaRule,
+    ConventionOverride,
     EntityRule,
     EntityType,
+    FixedEnd,
     Kind,
     LayerValue,
     LevelRule,
@@ -232,6 +234,33 @@ def rules(
     )
 
 
+def entity_fits(r: Rules, e: EntityRule) -> bool:
+    """擺在固定格的 entity：offset 在 0 到 grid - 1、整個矩形都在它的 level 內（D-014）。
+
+    獨立於 core 另寫一次；擺在錨點的要排了才知道，這裡當作放得下。
+    類型不存在（沒宣告、也不是範本的三種）大小不知道，也當作放得下。
+    """
+    if not isinstance(e.at, tuple):
+        return True
+    if any(not 0 <= o < r.grid for o in e.offset):
+        return False
+    declared = {t.name: t.size for t in r.entity_types}
+    level = next(lv for lv in r.levels if lv.name == (e.level or r.levels[0].name))
+    width, height = level.size
+    if e.size is not None:
+        if e.size[0] > width or e.size[1] > height:
+            return False
+        size = (e.size[0] * r.grid, e.size[1] * r.grid)
+    elif e.type in declared:
+        size = declared[e.type]
+    elif e.type in ("PlayerSpawn", "Teleport", "Part"):
+        size = (r.grid, r.grid)
+    else:
+        return True
+    x, y = e.at[0] * r.grid + e.offset[0], e.at[1] * r.grid + e.offset[1]
+    return x + size[0] <= width * r.grid and y + size[1] <= height * r.grid
+
+
 def stranded_elements(r: Rules) -> set[str] | None:
     """有斜坡格四周沒有高一階的格的元素（D-012）；排不下回傳 None。
 
@@ -338,6 +367,29 @@ def kind_data(k: Kind) -> dict[str, Any]:
     return item
 
 
+def end_data(end: str | FixedEnd) -> str | dict[str, Any]:
+    """傳送點的一端寫成 TOML 讀出的樣子：錨點是字串，固定端點是表格（D-014）；沒寫的是預設值。"""
+    if isinstance(end, str):
+        return end
+    item: dict[str, Any] = {}
+    if end.level is not None:
+        item["level"] = end.level
+    item["at"] = list(end.at)
+    if end.size != (1, 1):
+        item["size"] = list(end.size)
+    return item
+
+
+def override_data(o: ConventionOverride) -> dict[str, Any]:
+    """分層慣例 entity 的覆寫寫成 TOML 讀出的樣子。"""
+    item: dict[str, Any] = {}
+    if o.color is not None:
+        item["color"] = o.color
+    if o.tags is not None:
+        item["tags"] = list(o.tags)
+    return item
+
+
 def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
     """規則資料寫成 TOML 再用 tomllib 讀出來的樣子；選填欄位是預設值時不寫。
 
@@ -359,6 +411,8 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
     data: dict[str, Any] = {"seed": r.seed}
     if r.grid != DEFAULT_GRID:
         data["grid"] = r.grid
+    if r.split is not None:
+        data["split"] = r.split
     data["level"] = levels[0] if simple else levels
     data["kinds"] = {k.name: kind_data(k) for k in r.kinds}
     for key, values in (("grounds", r.grounds), ("collisions", r.collisions)):
@@ -397,14 +451,18 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
         }
         if e.fields:
             entity["fields"] = dict(e.fields)
+        if e.size is not None:
+            entity["size"] = list(e.size)
+        if e.offset != (0, 0):
+            entity["offset"] = list(e.offset)
         entities.append(placed(e, entity))
-    portals = [{"name": p.name, "from": p.start, "to": p.to} for p in r.portals]
-    if r.entity_types:
+    portals = [{"name": p.name, "from": end_data(p.start), "to": end_data(p.to)} for p in r.portals]
+    if r.entity_types or r.overrides:
         data["entity_types"] = {
             et.name: {"color": et.color, "size": list(et.size), "fields": dict(et.fields)}
             | ({"tags": list(et.tags)} if et.tags else {})
             for et in r.entity_types
-        }
+        } | {o.name: override_data(o) for o in r.overrides}
     for key, items in (("area", areas), ("path", paths), ("entity", entities), ("portal", portals)):
         if items:
             data[key] = items
@@ -500,11 +558,12 @@ def _without(r: Rules, name: str) -> Rules:
         for e in r.entities
         if e.name not in gone and not (isinstance(e.at, str) and e.at.split(".")[0] in gone)
     ]
-    # 傳送點：點名的就是它，或兩端有一端的錨點在拿掉的元素上
+    # 傳送點：點名的就是它，或兩端有一端的錨點在拿掉的元素上（固定端點不指向任何元素）
     keep_portal = [
         p
         for p in r.portals
-        if p.name not in gone and not {p.start.split(".")[0], p.to.split(".")[0]} & gone
+        if p.name not in gone
+        and not {e.split(".")[0] for e in (p.start, p.to) if isinstance(e, str)} & gone
     ]
     return replace(
         r,
@@ -551,6 +610,8 @@ def to_toml_text(r: Rules) -> str:
     lines = [f"seed = {data['seed']}"]
     if "grid" in data:
         lines.append(f"grid = {data['grid']}")
+    if "split" in data:
+        lines.append(f"split = {value(data['split'])}")
     levels: object = data["level"]
     many = isinstance(levels, list)
     tables = cast(list[dict[str, object]], levels) if many else [cast(dict[str, object], levels)]
@@ -679,20 +740,24 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             portals.append(PortalRule(name, start, to))
     entities = [_retyped(draw, e, types) for e in entities]
     seed = draw(st.integers(-(2**63), 2**63 - 1))
-    return qualified_slopes(
-        Rules(
-            seed,
-            tuple(levels),
-            kinds,
-            tuple(areas),
-            tuple(paths),
-            tuple(entities),
-            tuple(types),
-            tuple(portals),
-            VILLAGE_GROUNDS,
-            VILLAGE_COLLISIONS,
-        )
+    made = Rules(
+        seed,
+        tuple(levels),
+        kinds,
+        tuple(areas),
+        tuple(paths),
+        tuple(entities),
+        tuple(types),
+        tuple(portals),
+        VILLAGE_GROUNDS,
+        VILLAGE_COLLISIONS,
     )
+    # 宣告的類型比一格大時，擺在邊上會超出 level（D-014）：那種 entity 改成一格大的 PlayerSpawn
+    entities = [
+        e if entity_fits(made, e) else EntityRule(e.name, "PlayerSpawn", e.at, e.level)
+        for e in entities
+    ]
+    return qualified_slopes(replace(made, entities=tuple(entities)))
 
 
 def _retyped(draw: st.DrawFn, entity: EntityRule, types: list[EntityType]) -> EntityRule:
@@ -821,3 +886,142 @@ def placeable_multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> R
             r = smaller
             continue
         return qualified_slopes(r)
+
+
+# D-014 的寫法用的固定值：一個地面種類、一種區域；分層慣例 entity 的外觀覆寫
+PLACEMENT_GROUNDS = (LayerValue("g", 1, "#102030"),)
+PLACEMENT_KINDS = (Kind("k", ground="g"),)
+OVERRIDABLE = ("PlayerSpawn", "Teleport", "Part")
+colors = st.integers(0, 0xFFFFFF).map(lambda c: f"#{c:06X}")
+
+
+@st.composite
+def override_list(draw: st.DrawFn) -> tuple[ConventionOverride, ...]:
+    """分層慣例 entity 的覆寫：挑幾種，各寫 color 或 tags；PlayerSpawn 的 tags 一定有 player。"""
+    found: list[ConventionOverride] = []
+    for name in draw(st.lists(st.sampled_from(OVERRIDABLE), unique=True, max_size=3)):
+        color, tags = draw(st.none() | colors), draw(st.none() | entity_tags)
+        if color is None and tags is None:
+            color = draw(colors)
+        if name == "PlayerSpawn" and tags is not None:
+            tags = ("player", *(t for t in tags if t != "player"))
+        found.append(ConventionOverride(name, color, tags))
+    return tuple(found)
+
+
+@st.composite
+def placement_rules(draw: st.DrawFn) -> Rules:
+    """合法的規則，用到 D-014 的寫法，而且生成一定成功。
+
+    - 格子大小 1 到 96 都有；1 或 2 個 level，各有一塊固定位置的區域。
+    - entity 有時寫 `size`（格）、`offset`（像素），擺在固定的格或區域的錨點；矩形都在 level 內。
+    - 傳送點兩端有時是固定端點（位置加大小），有時是錨點；端點之間、端點跟 entity 都不佔同一格。
+    - 有時覆寫分層慣例 entity 的顏色與 tags，有時指定 `split`。
+    """
+    grid = draw(st.sampled_from([1, 2, 16, 96]) | st.integers(1, 48))
+    many = draw(st.booleans())
+    levels = [
+        LevelRule(f"L{i}", (draw(st.integers(4, 12)), draw(st.integers(4, 12))), at=(i * 100, 0))
+        for i in range(2 if many else 1)
+    ]
+
+    def written(name: str) -> str | None:
+        """元素寫在哪個 level：有好幾個 level 時一定要寫，只有一個時有時省略。"""
+        return name if many else draw(st.none() | st.just(name))
+
+    areas: list[AreaRule] = []
+    anchors: dict[str, list[tuple[str, tuple[int, int]]]] = {lv.name: [] for lv in levels}
+    for lv in levels:
+        w, h = draw(st.integers(1, lv.size[0])), draw(st.integers(1, lv.size[1]))
+        x, y = draw(st.integers(0, lv.size[0] - w)), draw(st.integers(0, lv.size[1] - h))
+        area = AreaRule(f"a_{lv.name}", "k", (w, h), at=(x, y), level=written(lv.name))
+        areas.append(area)
+        for anchor in ("center", "north", "east", "south", "west"):
+            dx = {"west": 0, "east": w - 1}.get(anchor, w // 2)
+            dy = {"north": 0, "south": h - 1}.get(anchor, h // 2)
+            anchors[lv.name].append((f"{area.name}.{anchor}", (x + dx, y + dy)))
+
+    types: tuple[EntityType, ...] = ()
+    if draw(st.booleans()):
+        sign = (draw(st.integers(1, 2 * grid)), draw(st.integers(1, 2 * grid)))
+        types = (EntityType("Sign", "#FFFFFF", sign, (), draw(entity_tags)),)
+    sizes = {t.name: t.size for t in types}
+    taken: dict[str, set[tuple[int, int]]] = {lv.name: set() for lv in levels}
+
+    entities: list[EntityRule] = []
+    for i in range(draw(st.integers(0, 4))):
+        lv = draw(st.sampled_from(levels))
+        width, height = lv.size
+        kind = draw(st.sampled_from(["PlayerSpawn", "Part", *sizes]))
+        size = draw(st.none() | st.tuples(st.integers(1, 3), st.integers(1, 3)))
+        if size is not None and (size[0] > width or size[1] > height):
+            size = None
+        w_px, h_px = (size[0] * grid, size[1] * grid) if size else sizes.get(kind, (grid, grid))
+        # 矩形要放得進 level：格子數不夠放就改成一格大的 PlayerSpawn
+        cols, rows = -(-w_px // grid), -(-h_px // grid)
+        if cols > width or rows > height:
+            kind, size, w_px, h_px, cols, rows = "PlayerSpawn", None, grid, grid, 1, 1
+        anchored = [
+            (a, c) for a, c in anchors[lv.name] if c[0] + cols <= width and c[1] + rows <= height
+        ]
+        if anchored and draw(st.booleans()):
+            at, cell = draw(st.sampled_from(anchored))
+            where: str | tuple[int, int] = at
+        else:
+            cell = (draw(st.integers(0, width - cols)), draw(st.integers(0, height - rows)))
+            where = cell
+        if cell in taken[lv.name]:
+            continue
+        taken[lv.name].add(cell)
+        top = (
+            min(grid - 1, width * grid - cell[0] * grid - w_px),
+            min(grid - 1, height * grid - cell[1] * grid - h_px),
+        )
+        offset = (draw(st.integers(0, top[0])), draw(st.integers(0, top[1])))
+        values = draw(part_fields()) if kind == "Part" else ()
+        entities.append(EntityRule(f"e{i}", kind, where, written(lv.name), values, size, offset))
+
+    portals: list[PortalRule] = []
+    for i in range(draw(st.integers(0, 2))):
+        ends: list[str | FixedEnd] = []
+        claimed: list[tuple[str, set[tuple[int, int]]]] = []
+        for _ in range(2):
+            lv = draw(st.sampled_from(levels))
+            held = {c for n, cells in claimed if n == lv.name for c in cells}
+            free = [(a, c) for a, c in anchors[lv.name] if c not in taken[lv.name] | held]
+            if free and draw(st.booleans()):
+                at, cell = draw(st.sampled_from(free))
+                claimed.append((lv.name, {cell}))
+                ends.append(at)
+                continue
+            size = (
+                draw(st.integers(1, min(3, lv.size[0]))),
+                draw(st.integers(1, min(3, lv.size[1]))),
+            )
+            x = draw(st.integers(0, lv.size[0] - size[0]))
+            y = draw(st.integers(0, lv.size[1] - size[1]))
+            cells = {(cx, cy) for cx in range(x, x + size[0]) for cy in range(y, y + size[1])}
+            if cells & (taken[lv.name] | held):
+                break
+            claimed.append((lv.name, cells))
+            ends.append(FixedEnd(written(lv.name), (x, y), size))
+        if len(ends) == 2:
+            for name, cells in claimed:  # 兩端都放得下才算數
+                taken[name] |= cells
+            portals.append(PortalRule(f"p{i}", ends[0], ends[1]))
+
+    return Rules(
+        draw(st.integers(-(2**63), 2**63 - 1)),
+        tuple(levels),
+        PLACEMENT_KINDS,
+        tuple(areas),
+        (),
+        tuple(entities),
+        types,
+        tuple(portals),
+        PLACEMENT_GROUNDS,
+        (),
+        grid,
+        draw(override_list()),
+        draw(st.none() | st.booleans()),
+    )
