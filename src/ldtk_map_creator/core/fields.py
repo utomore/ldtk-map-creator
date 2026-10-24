@@ -31,6 +31,17 @@ def managed(fdef: FieldDef) -> bool:
     return not fdef["isArray"] and fdef["__type"] in FIELD_TYPES
 
 
+def value_fits(kind: str, value: object) -> bool:
+    """值的型別對不對（不看範圍）：Float 也收整數；bool 是 int 的子類別，不算數字。"""
+    return {
+        "Int": isinstance(value, int) and not isinstance(value, bool),
+        "Float": isinstance(value, int | float) and not isinstance(value, bool),
+        "Bool": isinstance(value, bool),
+        "String": isinstance(value, str),
+        "EntityRef": isinstance(value, str),
+    }.get(kind, False)
+
+
 def check_value(
     project: Project, fdef: FieldDef, value: object, where: Locations, owner: tuple[int, str]
 ) -> None:
@@ -45,14 +56,7 @@ def check_value(
         if not fdef["canBeNull"]:
             raise SceneError(f"欄位 {name}（{kind}）不能是空的")
         return
-    ok = {
-        "Int": isinstance(value, int) and not isinstance(value, bool),
-        "Float": isinstance(value, int | float) and not isinstance(value, bool),
-        "Bool": isinstance(value, bool),
-        "String": isinstance(value, str),
-        "EntityRef": isinstance(value, str),
-    }[kind]
-    if not ok:
+    if not value_fits(kind, value):
         raise SceneError(f"欄位 {name} 要是 {kind}：{value!r}")
     if kind in ("Int", "Float"):
         number = cast(float, value)

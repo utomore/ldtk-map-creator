@@ -4,6 +4,7 @@
 這裡只看規則檔本身；entity 的 type 是不是範本裡的定義，要等生成時對照場景地圖。
 """
 
+import math
 import re
 import tomllib
 from collections.abc import Callable
@@ -13,7 +14,7 @@ from typing import Any, Literal, cast
 
 from . import convention, template
 from .errors import SceneError
-from .fields import FIELD_TYPES
+from .fields import FIELD_TYPES, value_fits
 from .scene import IDENTIFIER, RESERVED_NAMES
 
 Side = Literal["north", "east", "south", "west"]
@@ -97,12 +98,13 @@ class PathRule:
 
 @dataclass(frozen=True)
 class EntityRule:
-    """entity：擺在一個錨點，或固定的格。"""
+    """entity：擺在一個錨點，或固定的格；`fields` 是帶的欄位值（照檔案順序），沒寫的用預設值。"""
 
     name: str
     type: str
     at: str | Cell
     level: str | None = None
+    fields: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,16 +116,12 @@ class EntityType:
     size: Cell = DEFAULT_ENTITY_SIZE
     fields: tuple[tuple[str, str], ...] = ()
 
-    def ref_fields(self) -> list[str]:
-        return [n for n, t in self.fields if t == "EntityRef"]
-
 
 @dataclass(frozen=True)
 class PortalRule:
-    """傳送點（D-010）：兩個錨點各擺一個 `type` 的 entity，用它唯一的 EntityRef 欄位互指。"""
+    """傳送點（D-010、D-011）：兩個錨點各擺一個 `Teleport`，用 `targetPort` 互指。"""
 
     name: str
-    type: str
     start: str
     to: str
 
@@ -194,10 +192,10 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     entity_types = _entity_types(data.get("entity_types", {}))
     areas = tuple(_area(a, f"area[{i}]") for i, a in enumerate(_tables(data, "area")))
     paths = tuple(_path(p, f"path[{i}]") for i, p in enumerate(_tables(data, "path")))
-    entities = tuple(_entity(e, f"entity[{i}]") for i, e in enumerate(_tables(data, "entity")))
-    portals = tuple(
-        _portal(p, f"portal[{i}]", entity_types) for i, p in enumerate(_tables(data, "portal"))
+    entities = tuple(
+        _entity(e, f"entity[{i}]", entity_types) for i, e in enumerate(_tables(data, "entity"))
     )
+    portals = tuple(_portal(p, f"portal[{i}]") for i, p in enumerate(_tables(data, "portal")))
     rules = Rules(
         seed, levels, kinds, areas, paths, entities, entity_types, portals, grounds, collisions
     )
@@ -338,51 +336,72 @@ def _path(raw: object, where: str) -> PathRule:
     return PathRule(name, kind, start, to, width, level=_optional_name(table, "level", name))
 
 
-def _entity(raw: object, where: str) -> EntityRule:
+def _entity(raw: object, where: str, types: tuple[EntityType, ...]) -> EntityRule:
     table = _table(raw, where)
     name = _element_name(table, where)
-    _keys(table, name, required={"name", "type", "at"}, optional={"level"})
+    _keys(table, name, required={"name", "type", "at"}, optional={"level", "fields"})
     entity_type = _name(table["type"], f"{name}.type")
     level = _optional_name(table, "level", name)
+    values = _field_values(table.get("fields", {}), name, entity_type, types)
+    _check_convention_entity(name, entity_type, dict(values))
     at = table["at"]
     if isinstance(at, str):
-        return EntityRule(name, entity_type, at, level=level)
+        return EntityRule(name, entity_type, at, level=level, fields=values)
     cell = _cell(at, f"{name}.at", '錨點（例如 "road.end"）或 [x, y]')
-    return EntityRule(name, entity_type, cell, level=level)
+    return EntityRule(name, entity_type, cell, level=level, fields=values)
 
 
-def _portal(raw: object, where: str, types: tuple[EntityType, ...]) -> PortalRule:
+def _field_values(
+    raw: object, owner: str, entity_type: str, types: tuple[EntityType, ...]
+) -> tuple[tuple[str, object], ...]:
+    """`[[entity]]` 的 `fields`：欄位名稱要在那個類型的定義裡，值的型別照定義（D-011）。
+
+    類型是範本的三種，或 `[entity_types]` 宣告的；都不是的，類型本身的錯留給生成報，這裡不查欄位。
+    EntityRef 欄位不能在這裡寫，傳送點用 `[[portal]]`。
+    """
+    table = _table(raw, f"{owner}.fields")
+    declared = next((t for t in types if t.name == entity_type), None)
+    defined = dict(declared.fields) if declared else template.entity_field_types(entity_type)
+    if defined is None:
+        return tuple(table.items())
+    found: list[tuple[str, object]] = []
+    for field, value in table.items():
+        where = f"{owner}.fields.{field}"
+        kind = defined.get(field)
+        if kind is None:
+            have = "、".join(defined) or "沒有欄位"
+            raise SceneError(f"{where}：{entity_type} 沒有這個欄位（有：{have}）")
+        if kind == "EntityRef":
+            raise SceneError(f"{where}：EntityRef 欄位不能寫在 fields 裡，傳送點用 [[portal]]")
+        number = kind in ("Int", "Float") and value_fits(kind, value)
+        if not value_fits(kind, value) or (number and not math.isfinite(cast(float, value))):
+            raise SceneError(f"{where}：要是 {kind}：{value!r}")
+        found.append((field, value))
+    return tuple(found)
+
+
+def _check_convention_entity(name: str, entity_type: str, values: dict[str, object]) -> None:
+    """分層慣例的 entity 擺得合不合慣例（D-011）：Teleport 要成對、Part 要寫零件名稱。"""
+    if entity_type == convention.TELEPORT:
+        raise SceneError(f"{name}.type：{convention.TELEPORT} 要成對互指，用 [[portal]] 擺")
+    if entity_type == convention.PART:
+        part = values.get(convention.PART_NAME)
+        if not isinstance(part, str) or not part.strip():
+            raise SceneError(
+                f"{name}.fields.{convention.PART_NAME}：{convention.PART} 要寫零件名稱，"
+                '例如 fields = { part = "oak" }'
+            )
+
+
+def _portal(raw: object, where: str) -> PortalRule:
     table = _table(raw, where)
     name = _element_name(table, where)
-    _keys(table, name, required={"name", "from", "to"}, optional={"type"})
+    if "type" in table:
+        raise SceneError(f"{name}.type：傳送點一律是 {convention.TELEPORT}（D-011），不用寫 type")
+    _keys(table, name, required={"name", "from", "to"})
     start = _str(table["from"], f"{name}.from")
     to = _str(table["to"], f"{name}.to")
-    with_refs = [t for t in types if t.ref_fields()]
-    if "type" in table:
-        portal_type = _name(table["type"], f"{name}.type")
-    elif len(with_refs) == 1:
-        portal_type = with_refs[0].name  # 只有一種能互指的類型時可以不寫
-    else:
-        found = "、".join(t.name for t in with_refs) or "沒有"
-        raise SceneError(f"{name}.type：帶 EntityRef 欄位的類型有 {found}，要寫用哪一種")
-    portal_ref_field(types, name, portal_type)
-    return PortalRule(name, portal_type, start, to)
-
-
-def portal_ref_field(types: tuple[EntityType, ...], portal: str, portal_type: str) -> str:
-    """傳送點用哪個欄位互指：類型要宣告過、剛好一個 EntityRef 欄位（D-010）。
-
-    讀規則檔與生成共用；不合規定丟 SceneError，訊息開頭是 `<傳送點>.type`。
-    """
-    declared = next((t for t in types if t.name == portal_type), None)
-    if declared is None:
-        raise SceneError(f"{portal}.type：[entity_types] 裡沒有 {portal_type}")
-    refs = declared.ref_fields()
-    if len(refs) != 1:
-        raise SceneError(
-            f"{portal}.type：{portal_type} 要剛好一個 EntityRef 欄位才能互指，現在有 {len(refs)} 個"
-        )
-    return refs[0]
+    return PortalRule(name, start, to)
 
 
 def _entity_types(raw: object) -> tuple[EntityType, ...]:

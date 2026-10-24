@@ -75,13 +75,50 @@ AREA_KINDS = ["ground", "house", "hill", "ramp", "pond"]
 SLOTS = [(x * 25, y * 25) for x in range(-3, 4) for y in range(-3, 4) if (x, y) != (0, 0)]
 
 names = st.from_regex(r"[A-Za-z_][A-Za-z0-9_]{0,8}", fullmatch=True)
+PART_OR_NAME = names | st.just("Part")
+
+# 範本 Part 的欄位（D-011），獨立於 core 另寫一次
+PART_FIELDS = (("part", "String"), ("yaw", "Float"))
+
+
+def scalar_value(kind: str) -> st.SearchStrategy[object]:
+    """某個型別的欄位值（Int、Float、Bool、String）；Float 也收整數。"""
+    return {
+        "Int": st.integers(-(10**6), 10**6),
+        "Float": st.integers(-(10**6), 10**6) | st.floats(-1e6, 1e6, allow_nan=False),
+        "Bool": st.booleans(),
+        "String": st.text("abcXYZ019 _", max_size=8),
+    }[kind]
+
+
+@st.composite
+def field_values(
+    draw: st.DrawFn, defined: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, object], ...]:
+    """`[[entity]]` 的 fields：從欄位定義挑一部分（EntityRef 除外），順序任意，值的型別對。"""
+    usable = [f for f in defined if f[1] != "EntityRef"]
+    if not usable:
+        return ()
+    picked = draw(st.lists(st.sampled_from(usable), unique_by=lambda f: f[0], max_size=len(usable)))
+    return tuple((name, draw(scalar_value(kind))) for name, kind in picked)
+
+
+@st.composite
+def part_fields(draw: st.DrawFn) -> tuple[tuple[str, object], ...]:
+    """Part 的 fields：一定有不是空白的 part（D-011），有時加 yaw，順序任意。"""
+    items: list[tuple[str, object]] = [
+        ("part", draw(st.text("abcXYZ019_", min_size=1, max_size=8)))
+    ]
+    if draw(st.booleans()):
+        items.append(("yaw", draw(scalar_value("Float"))))
+    return tuple(draw(st.permutations(items)))
 
 
 @st.composite
 def rules(
     draw: st.DrawFn,
     *,
-    entity_types: st.SearchStrategy[str] = names,
+    entity_types: st.SearchStrategy[str] = PART_OR_NAME,
     max_side: int = 40,
     min_elements: int = 0,
     max_elements: int = 10,
@@ -149,7 +186,9 @@ def rules(
         else:
             cell = st.tuples(st.integers(0, width - 1), st.integers(0, height - 1))
             at = draw(st.sampled_from(anchors) | cell if anchors else cell)
-            entities.append(EntityRule(name, draw(entity_types), at))
+            entity_type = draw(entity_types)
+            fields = draw(part_fields()) if entity_type == "Part" else ()
+            entities.append(EntityRule(name, entity_type, at, fields=fields))
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     # level 名稱拆開存時就是檔名，Windows 的裝置名稱不合法（RULE-2 會擋）
     level = draw(names.filter(lambda n: n.lower() not in RESERVED_NAMES))
@@ -245,20 +284,17 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
         if p.width != 1:
             path["width"] = p.width
         paths.append(placed(p, path))
-    entities = [
-        placed(
-            e, {"name": e.name, "type": e.type, "at": e.at if isinstance(e.at, str) else list(e.at)}
-        )
-        for e in r.entities
-    ]
-    with_refs = [et for et in r.entity_types if et.ref_fields()]
-    portals: list[dict[str, Any]] = []
-    for portal in r.portals:
-        item: dict[str, Any] = {"name": portal.name, "from": portal.start, "to": portal.to}
-        # 只有一種能互指的類型時可以不寫 type；這裡用名稱的長度決定寫不寫，兩種寫法都測到
-        if not (len(with_refs) == 1 and len(portal.name) % 2 == 0):
-            item["type"] = portal.type
-        portals.append(item)
+    entities: list[dict[str, Any]] = []
+    for e in r.entities:
+        entity: dict[str, Any] = {
+            "name": e.name,
+            "type": e.type,
+            "at": e.at if isinstance(e.at, str) else list(e.at),
+        }
+        if e.fields:
+            entity["fields"] = dict(e.fields)
+        entities.append(placed(e, entity))
+    portals = [{"name": p.name, "from": p.start, "to": p.to} for p in r.portals]
     if r.entity_types:
         data["entity_types"] = {
             et.name: {"color": et.color, "size": list(et.size), "fields": dict(et.fields)}
@@ -315,7 +351,11 @@ def village_rules(draw: st.DrawFn) -> Rules:
             paths.append(PathRule(name, "road", start, to, draw(st.integers(1, 2))))
             anchors += [f"{name}.start", f"{name}.end"]
         else:
-            entities.append(EntityRule(name, "PlayerSpawn", draw(st.sampled_from(anchors))))
+            at = draw(st.sampled_from(anchors))
+            if draw(st.booleans()):
+                entities.append(EntityRule(name, "Part", at, fields=draw(part_fields())))
+            else:
+                entities.append(EntityRule(name, "PlayerSpawn", at))
             continue
         if choice != "path":
             anchors.append(f"{name}.center")
@@ -488,12 +528,12 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             entities.append(EntityRule(name, "PlayerSpawn", at, level=written))
         else:
             portal_names.append(name)
-    # entity 類型：一種給傳送點用（剛好一個 EntityRef），另外可能有一種不帶引用的
+    # 宣告的 entity 類型（遊戲自己的）：一種帶 EntityRef 欄位，一種只有一般欄位
     field_type = st.sampled_from(["Int", "Float", "Bool", "String"])
     types: list[EntityType] = []
-    if draw(st.booleans()) or portal_names:
+    if draw(st.booleans()):
         extra = tuple((f"f{i}", draw(field_type)) for i in range(draw(st.integers(0, 2))))
-        types.append(EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"), *extra)))
+        types.append(EntityType("Marker", "#4FC3F7", (16, 16), (("link", "EntityRef"), *extra)))
     if draw(st.booleans()):
         fields = tuple((f"g{i}", draw(field_type)) for i in range(draw(st.integers(0, 3))))
         size = (draw(st.integers(1, 32)), draw(st.integers(1, 32)))
@@ -522,7 +562,8 @@ def multi_rules(draw: st.DrawFn) -> Rules:
     if pairs:
         for name in portal_names:
             start, to = draw(st.sampled_from(pairs))
-            portals.append(PortalRule(name, "Portal", start, to))
+            portals.append(PortalRule(name, start, to))
+    entities = [_retyped(draw, e, types) for e in entities]
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     return Rules(
         seed,
@@ -536,6 +577,18 @@ def multi_rules(draw: st.DrawFn) -> Rules:
         VILLAGE_GROUNDS,
         VILLAGE_COLLISIONS,
     )
+
+
+def _retyped(draw: st.DrawFn, entity: EntityRule, types: list[EntityType]) -> EntityRule:
+    """有時把 entity 換成 Part 或宣告的類型，帶上那個類型的欄位值。"""
+    options: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+        ("PlayerSpawn", ()),
+        ("Part", PART_FIELDS),
+    ]
+    options += [(t.name, t.fields) for t in types]
+    kind, defined = draw(st.sampled_from(options))
+    values = draw(part_fields()) if kind == "Part" else draw(field_values(defined))
+    return replace(entity, type=kind, fields=values)
 
 
 def _prefixed(r: Rules, prefix: str, level: str) -> Rules:
@@ -591,8 +644,12 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     types: list[EntityType] = []
     entities = [e for part in moved for e in part.entities]
     if draw(st.booleans()):
-        types.append(EntityType("Sign", "#FFFFFF", (16, 16), (("label", "String"),)))
-        entities = [replace(e, type="Sign") if draw(st.booleans()) else e for e in entities]
+        sign = (("label", "String"), ("count", "Int"))
+        types.append(EntityType("Sign", "#FFFFFF", (16, 16), sign))
+        entities = [
+            replace(e, type="Sign", fields=draw(field_values(sign))) if draw(st.booleans()) else e
+            for e in entities
+        ]
     # 傳送點（D-010）：兩個錨點，跨 level 或同一個 level 都有，區域與路徑的錨點都用
     areas = tuple(a for part in moved for a in part.areas)
     paths = tuple(p for part in moved for p in part.paths)
@@ -600,12 +657,11 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     anchors += [f"{p.name}.{s}" for p in paths for s in PATH_ANCHORS]
     portals: list[PortalRule] = []
     if len(anchors) >= 2:
-        types.append(EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"),)))
         for i in range(draw(st.integers(min_portals, 2))):
             start, to = draw(
                 st.lists(st.sampled_from(anchors), min_size=2, max_size=2, unique=True)
             )
-            portals.append(PortalRule(f"door{i}", "Portal", start, to))
+            portals.append(PortalRule(f"door{i}", start, to))
     return Rules(
         parts[0].seed,
         tuple(levels),

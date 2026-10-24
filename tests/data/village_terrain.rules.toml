@@ -61,3 +61,15 @@ gap = 3
 name = "spawn"
 type = "PlayerSpawn"
 at = "plaza.south"
+
+[[entity]]
+name = "oak_1"
+type = "Part"
+at = "plaza.east"
+fields = { part = "oak", yaw = 90 }
+
+[[entity]]
+name = "oak_2"
+type = "Part"
+at = "plaza.west"
+fields = { part = "oak" }

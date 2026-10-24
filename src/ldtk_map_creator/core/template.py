@@ -83,3 +83,14 @@ def entity() -> EntityInstance:
         if found["entityInstances"]:
             return copy.deepcopy(found["entityInstances"][0])
     raise SceneError("範本裡沒有 entity 可以複製")
+
+
+def entity_field_types(identifier: str) -> dict[str, str] | None:
+    """範本裡某個 entity 定義的欄位（名稱 → 型別），照定義的順序；沒有這個定義回 None。
+
+    唯讀，不複製整份範本；規則檔的 `fields` 用它檢查範本三種 entity 的欄位值（D-011）。
+    """
+    for edef in _cached()["defs"]["entities"]:
+        if edef["identifier"] == identifier:
+            return {f["identifier"]: f["__type"] for f in edef["fieldDefs"]}
+    return None

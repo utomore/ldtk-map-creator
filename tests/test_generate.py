@@ -14,7 +14,7 @@ from ldtk_map_creator.core import template
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
-from ldtk_map_creator.core.model import EntityDef, Project
+from ldtk_map_creator.core.model import Project
 from ldtk_map_creator.core.rules import (
     SIDES,
     AreaRule,
@@ -43,12 +43,14 @@ from tests.rule_strategies import (
 FAST = settings(max_examples=150, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
 # 通用的規則偏稀疏；混進像村莊的規則，才常有靠近別人、被擠開的區域
-spawn_rules = village_rules() | rules(entity_types=st.just("PlayerSpawn"), max_area=6)
+spawn_rules = village_rules() | rules(
+    entity_types=st.sampled_from(["PlayerSpawn", "Part"]), max_area=6
+)
 # 大多排得下的規則：GEN-3 以外的 law 只看排得下的情況，篩掉太多會讓 hypothesis 放棄
 fitting_rules = (
     placeable_village_rules()
     | placeable_multi_village_rules()
-    | rules(entity_types=st.just("PlayerSpawn"), max_area=6)
+    | rules(entity_types=st.sampled_from(["PlayerSpawn", "Part"]), max_area=6)
 )
 STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 # 區域在對象的哪一邊，就往反方向推才碰得到對象
@@ -92,7 +94,20 @@ def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
     assert iids[0] == sorted(expected)
 
 
+def _check_entity_fields(instance: Any, rule: EntityRule, entity_defs: dict[int, Any]) -> None:
+    """entity 的類型跟規則一樣；欄位實例跟定義一一對應，規則寫的欄位是那個值，沒寫的是預設值。"""
+    assert instance["__identifier"] == rule.type
+    wanted = [(f["identifier"], f["__type"]) for f in entity_defs[instance["defUid"]]["fieldDefs"]]
+    assert [(f["__identifier"], f["__type"]) for f in instance["fieldInstances"]] == wanted
+    given = dict(rule.fields)
+    assert set(given) <= {name for name, _ in wanted}
+    for f in instance["fieldInstances"]:
+        default = {"Int": 0, "Float": 0, "Bool": False}.get(f["__type"])
+        assert f["__value"] == given.get(f["__identifier"], default), (rule.name, f)
+
+
 @pytest.mark.law("GEN-2")
+@pytest.mark.law("SCENE-6")
 @FAST
 @given(fitting_rules)
 def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
@@ -223,6 +238,8 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         "Ground",
     ]
     by_iid = {element_iid(r.seed, e.name): e.name for e in r.entities}
+    rule_of = {e.name: e for e in r.entities}
+    entity_defs = {d["uid"]: d for d in loaded.project["defs"]["entities"]}
     portal_ends = {iid for p in r.portals for iid in portal_iids(r.seed, p.name)}
     got: dict[str, tuple[int, ...]] = {}
     grid = loaded.project["defaultGridSize"]
@@ -245,6 +262,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
                     continue  # 傳送點另外由 GEN-8 檢查
                 got[by_iid[e["iid"]]] = tuple(e["__grid"])
                 assert placed.level_of[by_iid[e["iid"]]] == level_name
+                _check_entity_fields(e, rule_of[by_iid[e["iid"]]], entity_defs)
     assert got == placed.entities
     # 宣告的 entity 類型變成定義：名稱、顏色、大小、欄位都照規則
     defs = {d["identifier"]: d for d in loaded.project["defs"]["entities"]}
@@ -539,9 +557,8 @@ def test_example_unparsed_rules_raise_scene_error(change: str, where: str) -> No
 
 
 def test_example_village_with_house_interior(tmp_path: Path) -> None:
-    """典型（D-009、D-010）：兩個 level、宣告的 entity 類型；House1 在村莊東邊隔 2 格、置中。"""
+    """典型（D-009、D-010）：兩個 level、傳送點；House1 在村莊東邊隔 2 格、置中。"""
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
-    r = dataclasses.replace(r, portals=())  # 傳送點是 #37
     scene, placed = generate_scene(r, tmp_path / "scene.ldtk")
     vx, vy, vw, vh = placed.levels["Village"]
     hx, hy, _, hh = placed.levels["House1"]
@@ -549,13 +566,33 @@ def test_example_village_with_house_interior(tmp_path: Path) -> None:
     assert hy == vy + (vh - hh) // 2
     house = scene.level("House1")
     assert (house["worldX"], house["worldY"]) == (hx * 16, hy * 16)
-    portal = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Portal")
-    assert [f["identifier"] for f in portal["fieldDefs"]] == ["target"]
     assert placed.level_of["room"] == "House1"
 
 
+def test_example_part_fields_written_and_defaults_kept(tmp_path: Path) -> None:
+    """典型（D-011）：oak_1 帶 part 與 yaw；沒寫的欄位是預設值（yaw 0、part 空）。"""
+    r = load_rules(EXAMPLE.with_name("village_terrain.rules.toml"))
+    scene, _ = generate_scene(r, tmp_path / "scene.ldtk")
+    found = {
+        e["iid"]: {f["__identifier"]: f["__value"] for f in e["fieldInstances"]}
+        for ly in scene.level("Village")["layerInstances"] or []
+        for e in ly["entityInstances"]
+        if e["__identifier"] == "Part"
+    }
+    assert found[element_iid(r.seed, "oak_1")] == {"part": "oak", "yaw": 90}
+    assert found[element_iid(r.seed, "oak_2")] == {"part": "oak", "yaw": 0}
+
+
+def test_example_entity_fields_refused_by_definition_name_the_element(tmp_path: Path) -> None:
+    """直接組出來、沒經過規則檔檢查的欄位值被定義擋下（欄位不存在）：訊息開頭是 <元素>.type。"""
+    r = load_rules(EXAMPLE)
+    bad = EntityRule("oak", "Part", "plaza.center", fields=(("nope", 1),))
+    with pytest.raises(SceneError, match=r"^oak\.type：.*nope"):
+        generate_scene(dataclasses.replace(r, entities=(bad,)), tmp_path / "scene.ldtk")
+
+
 def test_example_portal_links_village_and_house(tmp_path: Path) -> None:
-    """典型（D-010）：house_1 門口與房間南邊各一個 Portal，target 互指、跨 level。"""
+    """典型（D-010）：house_1 門口與房間南邊各一個 Teleport，targetPort 互指、跨 level。"""
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
     scene, placed = generate_scene(r, tmp_path / "scene.ldtk")
     save_scene(scene)
@@ -565,13 +602,13 @@ def test_example_portal_links_village_and_house(tmp_path: Path) -> None:
         for lv in loaded.project["levels"]
         for ly in lv["layerInstances"] or []
         for e in ly["entityInstances"]
-        if e["__identifier"] == "Portal"
+        if e["__identifier"] == "Teleport"
     }
     a, b = portal_iids(r.seed, "house_1_door")
     assert set(found) == {a, b}
     for me, other in ((a, b), (b, a)):
         _, entity = found[me]
-        ref = next(f for f in entity["fieldInstances"] if f["__identifier"] == "target")
+        ref = next(f for f in entity["fieldInstances"] if f["__identifier"] == "targetPort")
         value = cast(dict[str, object], ref["__value"])
         assert value["entityIid"] == other
         assert value["levelIid"] == found[other][0]["iid"]
@@ -707,8 +744,8 @@ def test_gen_8_portals_link_both_ends(r: Rules) -> None:
         assert (from_level, from_cell) != (to_level, to_cell)  # 兩端不在同一格
         for me, other in ((start, end), (end, start)):  # EntityRef 互指，可以跨 level
             entity = where[me][2]
-            assert entity["__identifier"] == portal.type
-            ref = next(f for f in entity["fieldInstances"] if f["__type"] == "EntityRef")
+            assert entity["__identifier"] == "Teleport"
+            ref = next(f for f in entity["fieldInstances"] if f["__identifier"] == "targetPort")
             value = cast(dict[str, object], ref["__value"])
             assert value["entityIid"] == other
             assert value["levelIid"] == level_iids[where[other][0]]
@@ -726,57 +763,47 @@ def test_example_portal_on_one_cell_road_is_refused() -> None:
         (),
         grounds=SIMPLE_GROUNDS,
     )
-    portal = PortalRule("p", "Portal", "road.start", "road.end")
-    kind = EntityType("Portal", fields=(("target", "EntityRef"),))
-    r = dataclasses.replace(r, entity_types=(kind,), portals=(portal,))
+    portal = PortalRule("p", "road.start", "road.end")
+    r = dataclasses.replace(r, portals=(portal,))
     placed_road = layout(dataclasses.replace(r, portals=())).anchors
     assert placed_road["road.start"] == placed_road["road.end"]
     with pytest.raises(SceneError, match=r"^p\.to："):
         layout(r)
 
 
+def _limit_teleport(monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
+    """讓範本的 Teleport 最多一個（超過時挪走最後一個）。"""
+    original = template.project
+
+    def limited() -> Project:
+        project = original()
+        teleport = next(d for d in project["defs"]["entities"] if d["identifier"] == "Teleport")
+        teleport["maxCount"], teleport["limitBehavior"], teleport["limitScope"] = (
+            1,
+            "MoveLastOne",
+            scope,
+        )
+        return project
+
+    monkeypatch.setattr(template, "project", limited)
+
+
 def test_example_portal_hits_max_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """傳送點類型有數量上限時，第二端擺不下要說清楚，不悄悄挪走第一端。"""
-    original = template.entity_def
-
-    def limited() -> EntityDef:
-        found = original()
-        found["maxCount"], found["limitBehavior"] = 1, "MoveLastOne"
-        return found
-
-    monkeypatch.setattr(template, "entity_def", limited)
+    """Teleport 有數量上限時，第二端擺不下要說清楚，不悄悄挪走第一端。"""
+    _limit_teleport(monkeypatch, "PerLevel")
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
     r = dataclasses.replace(r, levels=(r.levels[0],), areas=r.areas[:2])
-    door = PortalRule("door", "Portal", "house_1.south", "plaza.north")
+    door = PortalRule("door", "house_1.south", "plaza.north")
     r = dataclasses.replace(r, portals=(door,))
     with pytest.raises(SceneError, match=r"^door\.to：.*上限"):
         generate_scene(r, tmp_path / "scene.ldtk")
 
 
-def test_example_portal_type_checked_before_placing(tmp_path: Path) -> None:
-    """直接組出來的傳送點類型不對（例如 PlayerSpawn）：擺任何東西之前就報錯。"""
-    r = load_rules(EXAMPLE)
-    door = PortalRule("door", "PlayerSpawn", "plaza.north", "plaza.south")
-    with pytest.raises(SceneError, match=r"^door\.type："):
-        generate_scene(dataclasses.replace(r, portals=(door,)), tmp_path / "scene.ldtk")
-
-
 def test_example_portal_across_levels_hits_world_max_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """類型的數量上限是整個世界時，第二端會把另一個 level 的第一端挪走：要擋下來說清楚。"""
-    original = template.entity_def
-
-    def limited() -> EntityDef:
-        found = original()
-        found["maxCount"], found["limitBehavior"], found["limitScope"] = (
-            1,
-            "MoveLastOne",
-            "PerWorld",
-        )
-        return found
-
-    monkeypatch.setattr(template, "entity_def", limited)
+    """Teleport 的數量上限是整個世界時，第二端會把另一個 level 的第一端挪走：要擋下來說清楚。"""
+    _limit_teleport(monkeypatch, "PerWorld")
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
     with pytest.raises(SceneError, match=r"^house_1_door\.to：.*上限"):
         generate_scene(r, tmp_path / "scene.ldtk")
