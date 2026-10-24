@@ -28,7 +28,7 @@ from ldtk_map_creator.core.render import (
     world_view,
     write_preview,
 )
-from ldtk_map_creator.core.rules import AreaRule, EntityRule, Rules
+from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 from tests.rule_strategies import (
     SIMPLE_GROUNDS,
@@ -251,7 +251,9 @@ def test_example_label_in_one_row_level_stays_inside(tmp_path: Path) -> None:
 @given(placeable_village_rules(), st.integers(1, 3), st.integers(0, 99))
 def test_render_5_element_names(r: Rules, scale: int, pick: int) -> None:
     # 名稱畫在 entity 下面，可能被蓋住量不到；跟 entity 的關係由例子另外驗
-    r = dataclasses.replace(r, entities=())
+    # 區域零件（D-013）也是 entity，擺在區域中心；一樣去掉
+    kinds = tuple(dataclasses.replace(k, part=None, yaw=0.0) for k in r.kinds)
+    r = dataclasses.replace(r, entities=(), kinds=kinds)
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
     names = name_positions(placed, {a.name for a in r.areas})
@@ -621,3 +623,17 @@ def test_example_translucent_layer_blends_once_in_world_overview(tmp_path: Path)
     x, y, w, h = view.rects["Wide"]
     got = cast(tuple[int, ...], render_world(scene).getpixel((x + w // 2, y + h - 2)))
     assert all(abs(g - e) <= 1 for g, e in zip(got[:3], expected, strict=True))
+
+
+def test_example_area_name_avoids_its_part(tmp_path: Path) -> None:
+    """曾經壞過（#62 審查）：帶零件的區域，零件擺在中心；區域名稱挪開，不被零件方塊蓋住。"""
+    kinds = (Kind("house", ground="g", part="house"),)
+    areas = (AreaRule("house_1", "house", (5, 4), at="center"),)
+    r = one_level_rules(1, "L", (12, 12), kinds, areas, (), (), SIMPLE_GROUNDS)
+    scene, placed = generate_scene(r, tmp_path / "scene.ldtk")
+    names = name_positions(placed, {a.name for a in r.areas})
+    ((name, _, _, box),) = name_boxes(scene, "L", names, scale=2)
+    assert name == "house_1"
+    x, y = placed.parts["house_1"]
+    part = (MARGIN + x * 32, MARGIN + y * 32 - 14, MARGIN + (x + 1) * 32, MARGIN + (y + 1) * 32)
+    assert not (box[0] < part[2] and part[0] < box[2] and box[1] < part[3] and part[1] < box[3])

@@ -13,7 +13,12 @@ from hypothesis import strategies as st
 from ldtk_map_creator.core import template
 from ldtk_map_creator.core.check import check_scene
 from ldtk_map_creator.core.errors import SceneError
-from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
+from ldtk_map_creator.core.generate import (
+    area_part_iid,
+    element_iid,
+    generate_scene,
+    portal_iids,
+)
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
 from ldtk_map_creator.core.model import Project
 from ldtk_map_creator.core.rules import (
@@ -72,6 +77,14 @@ def _bbox(cells: frozenset[tuple[int, int]]) -> tuple[int, int, int, int]:
     return min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
 
 
+def _house_rules(entity_at: str | tuple[int, int] | None) -> Rules:
+    """一間帶零件的房子；`entity_at` 不是 None 時再擺一個 PlayerSpawn。"""
+    kinds = (Kind("house", ground="g", part="house", yaw=90.0),)
+    entities = (EntityRule("spawn", "PlayerSpawn", entity_at),) if entity_at else ()
+    areas = (AreaRule("home", "house", (3, 3), at="center"),)
+    return one_level_rules(1, "L", (9, 9), kinds, areas, (), entities, SIMPLE_GROUNDS)
+
+
 def _files(folder: Path) -> dict[str, bytes]:
     return {str(p.relative_to(folder)): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
 
@@ -93,6 +106,8 @@ def test_gen_1_same_rules_same_files(r: Rules, split: bool) -> None:
     assert written[0] == written[1]
     expected = [element_iid(r.seed, e.name) for e in r.entities]
     expected += [iid for p in r.portals for iid in portal_iids(r.seed, p.name)]
+    kinds = {k.name: k for k in r.kinds}
+    expected += [area_part_iid(r.seed, a.name) for a in r.areas if kinds[a.kind].part]
     assert iids[0] == sorted(expected)
 
 
@@ -204,14 +219,20 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         expected = entity.at if isinstance(entity.at, tuple) else placed.anchors[entity.at]
         assert placed.entities[entity.name] == expected
         assert placed.level_of[entity.name] == r.level_of(entity).name
+    # 種類帶零件的區域，中心有一個零件（D-013）
+    kinds = {k.name: k for k in r.kinds}
+    parted = [a for a in r.areas if kinds[a.kind].part is not None]
+    assert set(placed.parts) == {a.name for a in parted}
+    for area in parted:
+        assert placed.parts[area.name] == placed.anchors[f"{area.name}.center"]
     spots = [(placed.level_of[n], c) for n, c in placed.entities.items()]
+    spots += [(placed.level_of[n], c) for n, c in placed.parts.items()]
     assert len(set(spots)) == len(spots)  # 同一個 level 裡不擺在同一格
 
     with tempfile.TemporaryDirectory() as tmp:
         scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk")
         save_scene(scene)
         loaded = load_scene(Path(tmp) / "scene.ldtk")
-    kinds = {k.name: k for k in r.kinds}
     kind = {e.name: kinds[e.kind] for e in (*r.areas, *r.paths)}
     ground = {v.name: v.value for v in r.grounds}
     collision = {v.name: v.value for v in r.collisions}
@@ -243,7 +264,9 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     rule_of = {e.name: e for e in r.entities}
     entity_defs = {d["uid"]: d for d in loaded.project["defs"]["entities"]}
     portal_ends = {iid for p in r.portals for iid in portal_iids(r.seed, p.name)}
+    part_of = {area_part_iid(r.seed, a.name): a for a in parted}
     got: dict[str, tuple[int, ...]] = {}
+    got_parts: dict[str, tuple[str, tuple[int, ...], object, object]] = {}
     grid = loaded.project["defaultGridSize"]
     for level_name, (lx, ly, width, height) in placed.levels.items():
         level = loaded.level(level_name)
@@ -262,10 +285,31 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
             for e in layer["entityInstances"]:
                 if e["iid"] in portal_ends:
                     continue  # 傳送點另外由 GEN-8 檢查
+                if e["iid"] in part_of:
+                    # 區域零件：定義是 Part，欄位照種類（D-013）
+                    values = {f["__identifier"]: f["__value"] for f in e["fieldInstances"]}
+                    assert entity_defs[e["defUid"]]["identifier"] == "Part"
+                    area = part_of[e["iid"]]
+                    got_parts[area.name] = (
+                        level_name,
+                        tuple(e["__grid"]),
+                        values["part"],
+                        values["yaw"],
+                    )
+                    continue
                 got[by_iid[e["iid"]]] = tuple(e["__grid"])
                 assert placed.level_of[by_iid[e["iid"]]] == level_name
                 _check_entity_fields(e, rule_of[by_iid[e["iid"]]], entity_defs)
     assert got == placed.entities
+    assert got_parts == {
+        a.name: (
+            placed.level_of[a.name],
+            placed.parts[a.name],
+            kinds[a.kind].part,
+            kinds[a.kind].yaw,
+        )
+        for a in parted
+    }
     # 宣告的 entity 類型變成定義：名稱、顏色、大小、欄位都照規則
     defs = {d["identifier"]: d for d in loaded.project["defs"]["entities"]}
     for declared in r.entity_types:
@@ -284,7 +328,7 @@ def test_gen_3_failure_names_an_element(r: Rules) -> None:
         names = {e.name for e in (*r.areas, *r.paths, *r.entities)}
         head = str(error).split("：", 1)[0]
         element, _, field = head.partition(".")
-        assert element in names and field in ("at", "near", "to"), str(error)
+        assert element in names and field in ("at", "near", "to", "from"), str(error)
 
 
 @pytest.mark.law("GEN-3")
@@ -934,3 +978,19 @@ def test_example_wide_ramp_has_stranded_cells() -> None:
         ),
     ):
         generate_scene(wide, Path(tmp) / "scene.ldtk")
+
+
+def test_example_area_part_collides_with_entity(tmp_path: Path) -> None:
+    """邊界（D-013）：帶零件區域的中心是零件的格；別的 entity 擺過去，錯誤報在擺過去的那一個。
+
+    指錨點或寫固定格子都一樣；讀規則檔時指錨點的那種先擋下（RULE-2，見 test_rules）。
+    """
+    path = tmp_path / "scene.ldtk"
+    _, placed = generate_scene(_house_rules("home.north"), path)  # 不同格：擺得下
+    center = placed.anchors["home.center"]
+    assert placed.parts == {"home": center}
+    with pytest.raises(SceneError, match=r"^spawn\.at：跟「home 的零件」擺在同一格"):
+        generate_scene(_house_rules("home.center"), path)
+    with pytest.raises(SceneError, match=r"^spawn\.at：跟「home 的零件」擺在同一格"):
+        generate_scene(_house_rules(center), path)
+    assert not path.exists()  # 丟錯時還沒寫任何檔

@@ -12,7 +12,7 @@
 
 import random
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .errors import SceneError
 from .rules import (
@@ -52,6 +52,8 @@ class Layout:
     level_of: dict[str, str]
     # 每個傳送點兩端各在哪個 level、哪一格：（from 那端, to 那端）
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]]
+    # 種類帶零件的區域，零件擺在哪一格（區域的 center 錨點，D-013）
+    parts: dict[str, Cell] = field(default_factory=lambda: {})
 
 
 def placement_order(rules: Rules) -> tuple[Placeable, ...]:
@@ -122,9 +124,22 @@ def layout(rules: Rules) -> Layout:
         else:
             raise SceneError(f"{label}：沒有錨點 {at}")
         if spot in taken:
-            raise SceneError(f"{label}：跟 {taken[spot]} 擺在同一格 {spot[1]}")
+            raise SceneError(f"{label}：跟「{taken[spot]}」擺在同一格 {spot[1]}")
         taken[spot] = label.removesuffix(".at")
         return spot
+
+    # 區域的零件（D-013）：中心那格是區域的一部分，先佔下；擺到這格的 entity 或傳送點自己報錯
+    parts: dict[str, Cell] = {}
+    kinds = {k.name: k for k in rules.kinds}
+    for area in rules.areas:
+        kind = kinds.get(area.kind)
+        if kind is None:
+            raise SceneError(f"{area.name}.kind：[kinds] 裡沒有 {area.kind}")
+        if kind.part is None:
+            continue
+        spot = (level_of[area.name], anchors[f"{area.name}.center"])
+        taken[spot] = f"{area.name} 的零件"
+        parts[area.name] = spot[1]
 
     for entity in rules.entities:
         level = rules.level_of(entity).name
@@ -139,7 +154,8 @@ def layout(rules: Rules) -> Layout:
         start = spot_of(f"{portal.name}.from", portal.start, None)
         end = spot_of(f"{portal.name}.to", portal.to, None)
         portals[portal.name] = (start, end)
-    return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals)
+
+    return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals, parts)
 
 
 def place_levels(rules: Rules) -> dict[str, Rect]:

@@ -5,6 +5,7 @@
 （Teleport、Part）擺得合不合慣例（D-011）；type 不存在的錯，要等生成時對照場景地圖才報。
 """
 
+import math
 import re
 import tomllib
 from collections.abc import Callable
@@ -46,6 +47,7 @@ class Kind:
 
     `ground`、`collision` 是 `[grounds]`、`[collisions]` 宣告過的名稱；
     `height` 是 Height 層的階數（0 不畫）；`slope` 為真時 Slope 層畫 1。
+    `part` 是零件名稱：區域用了這個種類，生成時在它的中心擺一個 `Part`，方向是 `yaw`（D-013）。
     """
 
     name: str
@@ -53,6 +55,8 @@ class Kind:
     collision: str | None = None
     height: int = 0
     slope: bool = False
+    part: str | None = None
+    yaw: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,7 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     )
     _check_levels(rules)
     _check_links(rules)
+    _check_part_cells(rules)
     return rules
 
 
@@ -473,7 +478,12 @@ def _kinds(
                     f"{where}.{old}：圖格種類改成寫進哪幾層（ground、collision、height、slope）；"
                     "值與顏色改寫在 [grounds]、[collisions]（D-011）"
                 )
-        _keys(table, where, required=set(), optional={"ground", "collision", "height", "slope"})
+        _keys(
+            table,
+            where,
+            required=set(),
+            optional={"ground", "collision", "height", "slope", "part", "yaw"},
+        )
         ground = _declared(table, "ground", where, grounds, "grounds")
         collision = _declared(table, "collision", where, collisions, "collisions")
         height = _int(table.get("height", 0), f"{where}.height", minimum=0)
@@ -482,13 +492,30 @@ def _kinds(
         slope = table.get("slope", False)
         if not isinstance(slope, bool):
             raise SceneError(f"{where}.slope：要是 true 或 false：{slope!r}")
-        if ground is None and collision is None and height == 0 and not slope:
+        part, yaw = _kind_part(table, where)
+        if ground is None and collision is None and height == 0 and not slope and part is None:
             # 只寫 height = 0 或 slope = false 也算：哪一層都沒畫，元素在地圖上看不到
             raise SceneError(
                 f"{where}：至少要寫進一層（ground、collision、height 大於 0、slope = true）"
+                "或帶零件（part）"
             )
-        kinds.append(Kind(name, ground, collision, height, slope))
+        kinds.append(Kind(name, ground, collision, height, slope, part, yaw))
     return tuple(kinds)
+
+
+def _kind_part(table: dict[str, Any], where: str) -> tuple[str | None, float]:
+    """圖格種類的 `part`（不是空白的字串）與 `yaw`（有限的數字，預設 0；要先有 part）（D-013）。"""
+    if "part" not in table:
+        if "yaw" in table:
+            raise SceneError(f"{where}.yaw：要先寫 part（零件名稱）才能寫方向")
+        return None, 0.0
+    part = _str(table["part"], f"{where}.part")
+    if not part.strip():
+        raise SceneError(f"{where}.part：零件名稱不能是空白")
+    yaw = table.get("yaw", 0)
+    if isinstance(yaw, bool) or not isinstance(yaw, int | float) or not math.isfinite(yaw):
+        raise SceneError(f"{where}.yaw：要是數字：{yaw!r}")
+    return part, float(yaw)
 
 
 def _declared(
@@ -508,6 +535,22 @@ def _declared(
 # 元素之間的關係 ------------------------------------------------------------
 
 
+def _check_part_cells(rules: Rules) -> None:
+    """entity 或傳送點的錨點指到帶零件區域的 `.center`：那一格是零件的（D-013）。"""
+    kinds = {k.name: k for k in rules.kinds}
+    parted = {
+        f"{a.name}.center": a.name
+        for a in rules.areas
+        if a.kind in kinds and kinds[a.kind].part is not None
+    }
+    spots = [(f"{e.name}.at", e.at) for e in rules.entities]
+    for p in rules.portals:
+        spots += [(f"{p.name}.from", p.start), (f"{p.name}.to", p.to)]
+    for where, at in spots:
+        if isinstance(at, str) and at in parted:
+            raise SceneError(f"{where}：{at} 是 {parted[at]} 的零件擺的格（D-013），換一個錨點")
+
+
 def _check_links(rules: Rules) -> None:
     """名稱不重複、指向的東西都在而且在同一個 level、不超出 level、互相指向不成環。"""
     elements = (*rules.areas, *rules.paths, *rules.entities, *rules.portals)
@@ -525,6 +568,7 @@ def _check_links(rules: Rules) -> None:
             raise SceneError(f"{element.name}.level：沒有叫 {element.level} 的 level")
 
     kinds = {k.name for k in rules.kinds}
+    parted = {k.name for k in rules.kinds if k.part is not None}
     level_for = rules.level_of
     level_of = {e.name: level_for(e).name for e in (*rules.areas, *rules.paths)}
     anchors = {f"{a.name}.{s}": level_of[a.name] for a in rules.areas for s in AREA_ANCHORS}
@@ -553,6 +597,8 @@ def _check_links(rules: Rules) -> None:
         level = level_for(path)
         width, height = level.size
         _check_kind(path.kind, kinds, f"{path.name}.kind")
+        if path.kind in parted:
+            raise SceneError(f"{path.name}.kind：{path.kind} 帶零件（part），只有區域能用（D-013）")
         if path.width > path_width_limit(path, level.size):
             raise SceneError(f"{path.name}.width：{path.width} 比 level 的 {width}x{height} 寬")
         target(path.start, f"{path.name}.from", level.name)

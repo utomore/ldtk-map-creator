@@ -489,6 +489,11 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
         e.name: [e.type, [list(f) for f in sorted(e.fields)]] if e.fields else [e.type]
         for e in rules.entities
     }
+    kinds = {k.name: k for k in rules.kinds}
+    area_kind = {a.name: a.kind for a in rules.areas}
+    for name in placed.parts:  # 區域零件的名稱與方向（D-013）
+        kind = kinds[area_kind[name]]
+        shapes[name] = [kind.part, kind.yaw]
     new_record = record.make_record(target, placed, areas, shapes)
     summary = _generate_summary(rules, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}

@@ -113,15 +113,8 @@ def render_level(
     # 格線與元素名稱畫在 IntGrid 上、entity 下：名稱不被格線蓋掉，也不蓋住 entity
     origin = _label_grid(project, level, layer_defs, scale)
     _draw_grid(draw, level, origin, scale, numbers=False)
-    _draw_names(draw, _place_names(level, origin, labels, scale), scale)
-    boxes: list[tuple[EntityDef, tuple[int, int, int, int]]] = []
-    for layer in reversed(visible):
-        ldef = layer_defs[layer["layerDefUid"]]
-        for entity in layer["entityInstances"]:
-            edef = entity_defs.get(entity["defUid"])
-            if edef is None:
-                raise SceneError(f"entity {entity['iid']} 的定義不見了")
-            boxes.append((edef, _entity_box(layer, ldef, edef, entity, scale)))
+    boxes = _entity_boxes(level, layer_defs, entity_defs, scale)
+    _draw_names(draw, _place_names(level, origin, labels, scale, _keep_out(boxes, scale)), scale)
     # 方塊外的名稱先寫、再畫方塊：名稱可能比一格寬，不能蓋住別的 entity 方塊；
     # 寫在方塊裡的名稱最後寫，才不會被自己的方塊蓋掉
     entity_labels = [
@@ -154,16 +147,49 @@ def name_boxes(
     project = scene.project
     level = scene.level(level_id)
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
-    return _place_names(level, _label_grid(project, level, layer_defs, scale), labels, scale)
+    entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
+    keep_out = _keep_out(_entity_boxes(level, layer_defs, entity_defs, scale), scale)
+    origin = _label_grid(project, level, layer_defs, scale)
+    return _place_names(level, origin, labels, scale, keep_out)
+
+
+Box = tuple[int, int, int, int]
+
+
+def _entity_boxes(
+    level: Level, layer_defs: dict[int, LayerDef], entity_defs: dict[int, EntityDef], scale: int
+) -> list[tuple[EntityDef, Box]]:
+    """看得見的 entity 方塊（最下層先）。"""
+    boxes: list[tuple[EntityDef, Box]] = []
+    for layer in reversed([ly for ly in level["layerInstances"] or [] if ly["visible"]]):
+        ldef = layer_defs[layer["layerDefUid"]]
+        for entity in layer["entityInstances"]:
+            edef = entity_defs.get(entity["defUid"])
+            if edef is None:
+                raise SceneError(f"entity {entity['iid']} 的定義不見了")
+            boxes.append((edef, _entity_box(layer, ldef, edef, entity, scale)))
+    return boxes
+
+
+def _keep_out(boxes: list[tuple[EntityDef, Box]], scale: int) -> list[Box]:
+    """元素名稱要避開的範圍：entity 方塊，連同它上方寫 entity 名稱的那一條。"""
+    label = _label_size(scale) + 2
+    return [(left, top - label, right, bottom) for _, (left, top, right, bottom) in boxes]
 
 
 def _place_names(
-    level: Level, origin: tuple[int, int, int], labels: Sequence[Label], scale: int
+    level: Level,
+    origin: tuple[int, int, int],
+    labels: Sequence[Label],
+    scale: int,
+    keep_out: Sequence[Box] = (),
 ) -> list[NameBox]:
     """以標示位置為中心擺名稱，整個留在 level 裡、彼此不重疊。
 
-    靠邊放不下就往內推；比 level 還寬、還高或會撞到先擺的名稱，就縮小字；
-    縮到最小還放不下就不寫。照 labels 的順序擺，先到先得。
+    靠邊放不下就往內推；會蓋到 entity 方塊（`keep_out`）就上下挪一格、兩格；
+    比 level 還寬、還高或會撞到先擺的名稱，就縮小字；縮到最小還放不下就不寫。
+    怎麼挪都會蓋到 entity 時，照原位寫（寧可被蓋一部分，也不丟掉名稱）。
+    照 labels 的順序擺，先到先得。
     """
     grid, origin_x, origin_y = origin
     measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -182,17 +208,23 @@ def _place_names(
             if end - left > right - MARGIN or low - top > bottom - MARGIN:
                 continue
             cx = origin_x + x * grid * scale
-            cy = origin_y + y * grid * scale
             cx = round(min(max(cx, MARGIN - left), right - end))
-            cy = round(min(max(cy, MARGIN - top), bottom - low))
-            box = (
-                max(MARGIN, math.floor(cx + left)),
-                max(MARGIN, math.floor(cy + top)),
-                min(right, math.ceil(cx + end)),
-                min(bottom, math.ceil(cy + low)),
-            )
-            if any(_overlap(box, other[3]) for other in placed):
+            spots: list[tuple[int, Box]] = []
+            for shift in (0, -1, 1, -2, 2):  # 以格為單位上下挪
+                cy = origin_y + (y + shift) * grid * scale
+                cy = round(min(max(cy, MARGIN - top), bottom - low))
+                box = (
+                    max(MARGIN, math.floor(cx + left)),
+                    max(MARGIN, math.floor(cy + top)),
+                    min(right, math.ceil(cx + end)),
+                    min(bottom, math.ceil(cy + low)),
+                )
+                if not any(_overlap(box, other[3]) for other in placed):
+                    spots.append((cy, box))
+            if not spots:
                 continue
+            clear = [s for s in spots if not any(_overlap(s[1], k) for k in keep_out)]
+            cy, box = (clear or spots)[0]
             placed.append((name, size, (cx, cy), box))
             break
     return placed
