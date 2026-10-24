@@ -5,10 +5,17 @@ seed = 7
 name = "Village"
 size = [40, 30]  # 格
 
+[grounds]
+dirt = { value = 1, color = "#C8B27A" }
+stone = { value = 2, color = "#8E8E8E" }
+
+[collisions]
+wall = { value = 1, color = "#8A4B2F" }
+
 [kinds]
-plaza = { value = 1, color = "#C8B27A" }
-house = { value = 2, color = "#8A4B2F" }
-road = { value = 3, color = "#8E8E8E" }
+plaza = { ground = "dirt" }
+house = { ground = "dirt", collision = "wall" }
+road = { ground = "stone" }
 
 [[area]]
 name = "plaza"
@@ -45,5 +52,5 @@ width = 2
 
 [[entity]]
 name = "spawn"
-type = "Spawn"
+type = "PlayerSpawn"
 at = "main_road.end"

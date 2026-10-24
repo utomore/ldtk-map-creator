@@ -17,6 +17,7 @@ from ldtk_map_creator.core.rules import (
     EntityRule,
     EntityType,
     Kind,
+    LayerValue,
     LevelRule,
     PathRule,
     PortalRule,
@@ -43,9 +44,31 @@ def one_level_rules(
     areas: tuple[AreaRule, ...],
     paths: tuple[PathRule, ...],
     entities: tuple[EntityRule, ...],
+    grounds: tuple[LayerValue, ...] = (),
+    collisions: tuple[LayerValue, ...] = (),
 ) -> Rules:
     """只有一個 level、沒有 entity 類型與傳送點的規則（M2 的形狀）。"""
-    return Rules(seed, (LevelRule(level, size),), kinds, areas, paths, entities, (), ())
+    return Rules(
+        seed, (LevelRule(level, size),), kinds, areas, paths, entities, (), (), grounds, collisions
+    )
+
+
+# 固定的值定義與圖格種類（村莊形狀的規則用，D-011）：有地面、實心、高度、斜坡的各種組合
+VILLAGE_GROUNDS = (LayerValue("grass", 1, "#7CB342"), LayerValue("dirt", 2, "#C8B27A"))
+VILLAGE_COLLISIONS = (LayerValue("wall", 1, "#000000"), LayerValue("water", 2, "#2F4CBE"))
+VILLAGE_KINDS = (
+    Kind("ground", ground="dirt"),
+    Kind("house", ground="dirt", collision="wall"),
+    Kind("road", ground="grass"),
+    Kind("hill", ground="grass", height=2),
+    Kind("ramp", ground="grass", height=1, slope=True),
+    Kind("pond", collision="water"),
+)
+# 只有一種圖格種類 k、一種地面 g 的規則（單元測試用）
+SIMPLE_GROUNDS = (LayerValue("g", 1, "#000000"),)
+SIMPLE_KINDS = (Kind("k", ground="g"),)
+# 區域用的種類（路徑一律是 road）
+AREA_KINDS = ["ground", "house", "hill", "ramp", "pond"]
 
 
 # 固定位置 level 的格位：彼此隔 25 格，level 最大 20 格，避開第一個 level 預設的 (0, 0)
@@ -66,14 +89,22 @@ def rules(
 ) -> Rules:
     """合法的規則：每個元素只指向排在它前面的區域或路徑，所以一定不成環。"""
     width, height = draw(st.integers(1, max_side)), draw(st.integers(1, max_side))
-    kind_names = draw(st.lists(names, min_size=1, max_size=4, unique=True))
-    values = draw(
-        st.lists(
-            st.integers(1, 99), min_size=len(kind_names), max_size=len(kind_names), unique=True
-        )
-    )
     colors = st.integers(0, 0xFFFFFF).map(lambda c: f"#{c:06X}")
-    kinds = tuple(Kind(n, v, draw(colors)) for n, v in zip(kind_names, values, strict=True))
+    grounds = draw(layer_values(colors))
+    collisions = draw(layer_values(colors))
+    kind_names = draw(st.lists(names, min_size=1, max_size=4, unique=True))
+    kinds = tuple(
+        Kind(
+            n,
+            draw(st.none() | st.sampled_from([v.name for v in grounds])) if grounds else None,
+            draw(st.none() | st.sampled_from([v.name for v in collisions])) if collisions else None,
+            draw(st.integers(0, 4)),
+            draw(st.booleans()),
+        )
+        for n in kind_names
+    )
+    # 每個種類至少寫一層（RULE-2）：什麼都沒寫的補上高度 1
+    kinds = tuple(k if _writes(k) else replace(k, height=1) for k in kinds)
     element_names = draw(st.lists(names, min_size=min_elements, max_size=max_elements, unique=True))
 
     areas: list[AreaRule] = []
@@ -123,8 +154,45 @@ def rules(
     # level 名稱拆開存時就是檔名，Windows 的裝置名稱不合法（RULE-2 會擋）
     level = draw(names.filter(lambda n: n.lower() not in RESERVED_NAMES))
     return one_level_rules(
-        seed, level, (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
+        seed,
+        level,
+        (width, height),
+        kinds,
+        tuple(areas),
+        tuple(paths),
+        tuple(entities),
+        grounds,
+        collisions,
     )
+
+
+def _writes(kind: Kind) -> bool:
+    """圖格種類有沒有寫進任何一層（寫成規則檔時至少要有一個欄位）。"""
+    return kind.ground is not None or kind.collision is not None or kind.height > 0 or kind.slope
+
+
+@st.composite
+def layer_values(draw: st.DrawFn, colors: st.SearchStrategy[str]) -> tuple[LayerValue, ...]:
+    """`[grounds]` 或 `[collisions]`：0 到 3 個，名稱（不分大小寫）與值都不重複。"""
+    found = draw(st.lists(names, max_size=3, unique_by=lambda n: n.lower()))
+    values = draw(
+        st.lists(st.integers(1, 99), min_size=len(found), max_size=len(found), unique=True)
+    )
+    return tuple(LayerValue(n, v, draw(colors)) for n, v in zip(found, values, strict=True))
+
+
+def kind_data(k: Kind) -> dict[str, Any]:
+    """圖格種類寫成 TOML 讀出的樣子；沒寫的（預設值）不出現。"""
+    item: dict[str, Any] = {}
+    if k.ground is not None:
+        item["ground"] = k.ground
+    if k.collision is not None:
+        item["collision"] = k.collision
+    if k.height != 0:
+        item["height"] = k.height
+    if k.slope:
+        item["slope"] = True
+    return item
 
 
 def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
@@ -148,8 +216,11 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
     data: dict[str, Any] = {
         "seed": r.seed,
         "level": levels[0] if simple else levels,
-        "kinds": {k.name: {"value": k.value, "color": k.color} for k in r.kinds},
+        "kinds": {k.name: kind_data(k) for k in r.kinds},
     }
+    for key, values in (("grounds", r.grounds), ("collisions", r.collisions)):
+        if values:
+            data[key] = {v.name: {"value": v.value, "color": v.color} for v in values}
 
     def placed(element: AreaRule | PathRule | EntityRule, item: dict[str, Any]) -> dict[str, Any]:
         if element.level is not None:
@@ -206,10 +277,11 @@ def village_rules(draw: st.DrawFn) -> Rules:
     通用的 `rules()` 多半排不下或很稀疏；配置的 law 要常常碰撞、常常擠開才測得到。
     """
     width, height = draw(st.integers(12, 32)), draw(st.integers(12, 32))
-    kinds = (Kind("ground", 1, "#C8B27A"), Kind("house", 2, "#8A4B2F"), Kind("road", 3, "#8E8E8E"))
+    kinds = VILLAGE_KINDS
     size = st.tuples(st.integers(1, 5), st.integers(1, 5))
     count = draw(st.integers(4, 12))
     element_names = [f"e{i}" for i in range(count)]
+    area_kind = st.sampled_from(AREA_KINDS)
     areas: list[AreaRule] = [AreaRule("e0", "ground", draw(size), at="center")]
     paths: list[PathRule] = []
     entities: list[EntityRule] = []
@@ -221,13 +293,18 @@ def village_rules(draw: st.DrawFn) -> Rules:
             w, h = draw(size)
             w, h = min(w, width), min(h, height)
             at = (draw(st.integers(0, width - w)), draw(st.integers(0, height - h)))
-            areas.append(AreaRule(name, "house", (w, h), at=at))
+            areas.append(AreaRule(name, draw(area_kind), (w, h), at=at))
         elif choice == "near":
             side = draw(st.none() | st.sampled_from(SIDES))
             target = draw(st.sampled_from(targets))
             areas.append(
                 AreaRule(
-                    name, "house", draw(size), near=target, side=side, gap=draw(st.integers(0, 3))
+                    name,
+                    draw(area_kind),
+                    draw(size),
+                    near=target,
+                    side=side,
+                    gap=draw(st.integers(0, 3)),
                 )
             )
         elif choice == "path":
@@ -238,14 +315,22 @@ def village_rules(draw: st.DrawFn) -> Rules:
             paths.append(PathRule(name, "road", start, to, draw(st.integers(1, 2))))
             anchors += [f"{name}.start", f"{name}.end"]
         else:
-            entities.append(EntityRule(name, "Spawn", draw(st.sampled_from(anchors))))
+            entities.append(EntityRule(name, "PlayerSpawn", draw(st.sampled_from(anchors))))
             continue
         if choice != "path":
             anchors.append(f"{name}.center")
         targets.append(name)
     seed = draw(st.integers(0, 2**32))
     return one_level_rules(
-        seed, "Village", (width, height), kinds, tuple(areas), tuple(paths), tuple(entities)
+        seed,
+        "Village",
+        (width, height),
+        kinds,
+        tuple(areas),
+        tuple(paths),
+        tuple(entities),
+        VILLAGE_GROUNDS,
+        VILLAGE_COLLISIONS,
     )
 
 
@@ -308,6 +393,8 @@ def to_toml_text(r: Rules) -> str:
         if isinstance(v, dict):
             items = cast(dict[str, object], v).items()
             return "{ " + ", ".join(f"{k} = {value(x)}" for k, x in items) + " }"
+        if isinstance(v, bool):
+            return "true" if v else "false"
         return str(v)
 
     data = to_toml_data(r)
@@ -318,6 +405,10 @@ def to_toml_text(r: Rules) -> str:
     for level in tables:
         lines.append("[[level]]" if many else "[level]")
         lines += [f"{k} = {value(v)}" for k, v in level.items()]
+    for key in ("grounds", "collisions"):
+        if key in data:
+            lines.append(f"[{key}]")
+            lines += [f"{k} = {value(v)}" for k, v in data[key].items()]
     lines.append("[kinds]")
     lines += [f"{k} = {value(v)}" for k, v in data["kinds"].items()]
     if "entity_types" in data:
@@ -353,8 +444,8 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             near = draw(st.sampled_from(level_names[:i]))
             side = draw(st.none() | st.sampled_from(SIDES))
             levels.append(LevelRule(name, size, near=near, side=side, gap=draw(st.integers(0, 5))))
-    kinds = (Kind("ground", 1, "#C8B27A"), Kind("house", 2, "#8A4B2F"))
-    kind = st.sampled_from(["ground", "house"])
+    kinds = VILLAGE_KINDS
+    kind = st.sampled_from(AREA_KINDS)
     element_names = draw(st.lists(names, max_size=12, unique=True))
     areas: list[AreaRule] = []
     paths: list[PathRule] = []
@@ -394,7 +485,7 @@ def multi_rules(draw: st.DrawFn) -> Rules:
         elif choice == "entity":
             cell = st.tuples(st.integers(0, width - 1), st.integers(0, height - 1))
             at = draw(st.sampled_from(anchors[lv.name]) | cell if anchors[lv.name] else cell)
-            entities.append(EntityRule(name, "Spawn", at, level=written))
+            entities.append(EntityRule(name, "PlayerSpawn", at, level=written))
         else:
             portal_names.append(name)
     # entity 類型：一種給傳送點用（剛好一個 EntityRef），另外可能有一種不帶引用的
@@ -442,6 +533,8 @@ def multi_rules(draw: st.DrawFn) -> Rules:
         tuple(entities),
         tuple(types),
         tuple(portals),
+        VILLAGE_GROUNDS,
+        VILLAGE_COLLISIONS,
     )
 
 
@@ -472,7 +565,7 @@ def _prefixed(r: Rules, prefix: str, level: str) -> Rules:
 def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     """2～3 個 level，每個 level 一套像村莊的元素；第二個以後的 level 靠近前一個或固定在格位上。
 
-    有時再宣告一種 entity 類型，把一些 Spawn 換成它。
+    有時再宣告一種 entity 類型，把一些 PlayerSpawn 換成它。
     """
     count = draw(st.integers(2, 3))
     parts = [draw(village_rules()) for _ in range(count)]
@@ -522,6 +615,8 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
         tuple(entities),
         tuple(types),
         tuple(portals),
+        parts[0].grounds,
+        parts[0].collisions,
     )
 
 

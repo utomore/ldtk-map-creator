@@ -207,7 +207,7 @@ def test_example_portal_pair_across_levels(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"identifier": "Spawn"}, "同名"),
+        ({"identifier": "PlayerSpawn"}, "同名"),
         ({"identifier": "9bad"}, "名稱"),
         ({"identifier": "X", "color": "red"}, "顏色"),
         ({"identifier": "X", "width": 0}, "尺寸"),
@@ -302,12 +302,14 @@ def test_example_ref_rules_follow_the_field_definition(
 ) -> None:
     """EntityRef 照欄位定義的 allowedRefs、allowOutOfLevelRef 檢查（跟 LDtk 一樣）。"""
     scene = _scene(tmp_path, split=True)
-    spawn_def = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Spawn")
+    spawn_def = next(
+        d for d in scene.project["defs"]["entities"] if d["identifier"] == "PlayerSpawn"
+    )
     portal = next(d for d in scene.project["defs"]["entities"] if d["identifier"] == "Portal")
     target_def = next(f for f in portal["fieldDefs"] if f["identifier"] == "target")
     for key, value in change.items():
         target_def[key] = spawn_def["uid"] if value == "spawn" else value  # type: ignore[literal-required]
-    spawn = place_entity(scene, "House", "Spawn", x=0, y=0)["iid"]  # 另一個 level、另一種
+    spawn = place_entity(scene, "House", "PlayerSpawn", x=0, y=0)["iid"]  # 另一個 level、另一種
     a = place_entity(scene, "Village", "Portal", x=0, y=0)["iid"]
     if allowed:
         set_entity_fields(scene, a, {"target": spawn})
@@ -448,7 +450,7 @@ def test_example_new_ref_field_can_point_to_any_entity(tmp_path: Path) -> None:
     """add_entity_def 建的 EntityRef 哪一種 entity 都能指（範本預設只能指同一種）。"""
     scene = _scene(tmp_path, split=True)
     add_entity_def(scene, "Door", field_types={"switch": "EntityRef"})
-    switch = place_entity(scene, "Village", "Spawn", x=0, y=0)["iid"]
+    switch = place_entity(scene, "Village", "PlayerSpawn", x=0, y=0)["iid"]
     door = place_entity(scene, "Village", "Door", x=1, y=1, values={"switch": switch})
     ref = next(f for f in door["fieldInstances"] if f["__identifier"] == "switch")
     assert cast(dict[str, object], ref["__value"])["entityIid"] == switch

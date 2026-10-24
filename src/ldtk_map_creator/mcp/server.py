@@ -19,6 +19,8 @@ server = MCPServer(
     instructions=(
         "生成並微調 LDtk 場景地圖。path 是場景地圖的 .ldtk 主檔路徑；座標以格為單位，"
         "原點在 level 左上角。先用 describe_scene 看有哪些 level、圖層、IntGrid 值與 entity。"
+        "圖層照分層慣例（D-011）：Entities、Collision、Slope、Height、Ground；"
+        "畫格要用 layer 指定層。"
         "會改動地圖的工具都會回傳預覽圖。"
         "有 <名>.rules.toml 的場景地圖是從規則生成的：微調改規則檔，再呼叫 generate_scene。"
     ),
@@ -81,7 +83,10 @@ def paint_rect(
     height: int = 1,
     layer: str | None = None,
 ) -> Reply:
-    """把矩形範圍內的 IntGrid 格設成 value（0 是清除）。同型別圖層不只一層時要給 layer。"""
+    """把矩形範圍內的 IntGrid 格設成 value（0 是清除）。
+
+    場景地圖有四個 IntGrid 層（Collision、Slope、Height、Ground，D-011），要用 layer 指定畫哪一層。
+    """
     return _reply(
         lambda: actions.paint_rect(
             Path(path), level, x=x, y=y, width=width, height=height, value=value, layer=layer
@@ -93,7 +98,10 @@ def paint_rect(
 def paint_cells(
     path: str, level: str, cells: list[tuple[int, int]], value: int, layer: str | None = None
 ) -> Reply:
-    """把指定的幾格 [[x, y], ...] 設成 value（0 是清除）；任何一格出界就全部不改。"""
+    """把指定的幾格 [[x, y], ...] 設成 value（0 是清除）；任何一格出界就全部不改。
+
+    分層慣例有四個 IntGrid 層（Collision、Slope、Height、Ground），要用 layer 指定畫哪一層。
+    """
     return _reply(
         lambda: actions.paint_cells(Path(path), level, cells=cells, value=value, layer=layer)
     )
@@ -109,7 +117,7 @@ def place_entity(
     layer: str | None = None,
     values: dict[str, Any] | None = None,
 ) -> Reply:
-    """在 (x, y) 格擺一個 entity（entity 是定義的名稱，例如 Spawn）；values 是欄位值。"""
+    """在 (x, y) 格擺一個 entity（entity 是定義的名稱，例如 PlayerSpawn）；values 是欄位值。"""
     return _reply(
         lambda: actions.place_entity(
             Path(path), level, entity, x=x, y=y, layer=layer, values=values

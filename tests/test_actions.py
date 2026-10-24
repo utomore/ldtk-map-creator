@@ -50,10 +50,17 @@ def test_scene_5_actions_keep_disk_and_preview_current(
             try:
                 if kind == "paint":
                     actions.paint_rect(
-                        path, "Level_0", x=x, y=y, width=size, height=size, value=value
+                        path,
+                        "Level_0",
+                        x=x,
+                        y=y,
+                        width=size,
+                        height=size,
+                        value=value,
+                        layer="Collision",
                     )
                 elif kind == "place":
-                    result = actions.place_entity(path, "Level_0", "Spawn", x=x, y=y)
+                    result = actions.place_entity(path, "Level_0", "PlayerSpawn", x=x, y=y)
                     assert result.iid is not None
                     placed.append(result.iid)
                 elif kind == "move" and placed:
@@ -79,7 +86,7 @@ def _check_disk(
     if kind == "paint":
         for cy in range(y, y + size):
             for cx in range(x, x + size):
-                assert read_cell(scene, "Level_0", x=cx, y=cy) == value
+                assert read_cell(scene, "Level_0", x=cx, y=cy, layer="Collision") == value
         return
     entities = {
         e["iid"]: e
@@ -104,7 +111,7 @@ def test_example_failed_preview_leaves_disk_unchanged(
 
     monkeypatch.setattr(rendering, "write_preview", broken)
     with pytest.raises(SceneError):
-        actions.paint_rect(path, "Level_0", x=0, y=0, value=1)
+        actions.paint_rect(path, "Level_0", x=0, y=0, value=1, layer="Collision")
     assert _files(tmp_path) == before
 
 
@@ -117,8 +124,8 @@ def test_example_move_last_one_across_levels_updates_both_previews(tmp_path: Pat
     spawn = scene.project["defs"]["entities"][0]
     spawn.update(maxCount=1, limitScope="PerWorld", limitBehavior="MoveLastOne")
     save_scene(scene)
-    actions.place_entity(path, "Level_0", "Spawn", x=1, y=1)
-    result = actions.place_entity(path, "Inn", "Spawn", x=2, y=2)
+    actions.place_entity(path, "Level_0", "PlayerSpawn", x=1, y=1)
+    result = actions.place_entity(path, "Inn", "PlayerSpawn", x=2, y=2)
     assert {p.name for p in result.previews} == {"Level_0.png", "Inn.png"}
 
 
@@ -130,7 +137,7 @@ def test_example_only_changed_level_files_are_rewritten(tmp_path: Path) -> None:
     inn = tmp_path / "village" / "Inn.ldtkl"
     marked = inn.read_text(encoding="utf-8") + chr(10) * 2  # 內容一樣、多了空行
     inn.write_text(marked, encoding="utf-8")
-    actions.paint_rect(path, "Level_0", x=0, y=0, value=1)
+    actions.paint_rect(path, "Level_0", x=0, y=0, value=1, layer="Collision")
     assert inn.read_text(encoding="utf-8") == marked
 
 
@@ -141,7 +148,9 @@ def test_example_parallel_actions_do_not_lose_updates(tmp_path: Path) -> None:
     cells = [(x, 5) for x in range(12)]
     threads = [
         threading.Thread(
-            target=actions.paint_rect, args=(path, "Level_0"), kwargs={"x": x, "y": y, "value": 1}
+            target=actions.paint_rect,
+            args=(path, "Level_0"),
+            kwargs={"x": x, "y": y, "value": 1, "layer": "Collision"},
         )
         for x, y in cells
     ]
@@ -150,15 +159,15 @@ def test_example_parallel_actions_do_not_lose_updates(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
     scene = load_scene(path)
-    assert all(read_cell(scene, "Level_0", x=x, y=y) == 1 for x, y in cells)
+    assert all(read_cell(scene, "Level_0", x=x, y=y, layer="Collision") == 1 for x, y in cells)
 
 
 def test_example_no_change_still_returns_preview(tmp_path: Path) -> None:
     """邊界：畫一格本來就是這個值，內容沒變，也照樣回傳目標 level 的預覽圖。"""
     path = tmp_path / "village.ldtk"
     actions.create_scene(path)
-    actions.paint_rect(path, "Level_0", x=0, y=0, value=1)
-    again = actions.paint_rect(path, "Level_0", x=0, y=0, value=1)
+    actions.paint_rect(path, "Level_0", x=0, y=0, value=1, layer="Collision")
+    again = actions.paint_rect(path, "Level_0", x=0, y=0, value=1, layer="Collision")
     assert [p.name for p in again.previews] == ["Level_0.png"]
 
 

@@ -6,6 +6,7 @@ from functools import cache
 from importlib import resources
 from typing import cast
 
+from . import convention
 from .errors import SceneError
 from .model import EntityDef, EntityInstance, FieldDef, LayerInstance, Level, Project
 
@@ -33,9 +34,19 @@ def field_def(field_type: str) -> FieldDef:
 
 
 def entity_def() -> EntityDef:
-    """範本 entity 定義（Spawn）的複本，不帶欄位；identifier、uid、顏色、大小由呼叫端填。"""
-    found = copy.deepcopy(_cached()["defs"]["entities"][0])
+    """範本 entity 定義（PlayerSpawn）的複本，不帶欄位與 tags。
+
+    identifier、uid、顏色、大小由呼叫端填。
+    """
+    base = next(
+        (d for d in _cached()["defs"]["entities"] if d["identifier"] == convention.PLAYER_SPAWN),
+        None,
+    )
+    if base is None:
+        raise SceneError(f"範本裡沒有 {convention.PLAYER_SPAWN} 可以當 entity 定義的底")
+    found = copy.deepcopy(base)
     found["fieldDefs"] = []
+    found["tags"] = []  # PlayerSpawn 帶 player tag；宣告的類型不是出生點
     return found
 
 

@@ -1,4 +1,4 @@
-"""照規則生成場景地圖（D-007、D-009、D-010）：配置之後畫進每個 level。
+"""照規則生成場景地圖（D-007、D-009、D-010、D-011）：配置之後畫進每個 level。
 
 同規則同 seed，寫出的檔完全相同：iid 與圖層的 seed 都由 seed 加名字推出。
 """
@@ -6,14 +6,14 @@
 import random
 from pathlib import Path
 
-from . import fields
+from . import convention, fields
 from .derived import refresh_derived
 from .edit import add_entity_def, paint_cells, place_entity
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
-from .model import EntityInstance, Level
-from .rules import Rules, portal_ref_field
+from .model import EntityInstance, IntGridValueDef, Level
+from .rules import Kind, LayerValue, Rules, portal_ref_field
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -37,16 +37,15 @@ def generate_scene(
     placed = layout(rules)
     scene = new_scene(path, split=split, overwrite=overwrite)
     project = scene.project
-    for layer_type in ("IntGrid", "Entities"):
-        found = [d for d in project["defs"]["layers"] if d["type"] == layer_type]
-        if len(found) != 1:
-            raise SceneError(f"範本要剛好一個 {layer_type} 圖層，現在有 {len(found)} 個")
-    intgrid = [d for d in project["defs"]["layers"] if d["type"] == "IntGrid"]
-    intgrid[0]["intGridValues"] = [
-        {"value": k.value, "identifier": k.name, "color": k.color, "tile": None, "groupUid": 0}
-        for k in rules.kinds
-    ]
-    # 規則宣告的 entity 類型變成 LDtk 的 entity 定義，加在範本的 Spawn 旁邊（D-010）
+    layer_defs = {d["identifier"]: d for d in project["defs"]["layers"]}
+    for name in convention.LAYERS:
+        found = [d["type"] for d in project["defs"]["layers"] if d["identifier"] == name]
+        wanted = "Entities" if name == convention.ENTITIES else "IntGrid"
+        if found != [wanted]:
+            raise SceneError(f"範本要剛好一個 {wanted} 圖層叫 {name}，現在是 {found}（D-011）")
+    for name, values in _layer_values(rules).items():
+        layer_defs[name]["intGridValues"] = values
+    # 規則宣告的 entity 類型變成 LDtk 的 entity 定義，加在範本的三種 entity 旁邊（D-010、D-011）
     for kind in rules.entity_types:
         width, height = kind.size
         try:
@@ -69,13 +68,17 @@ def generate_scene(
             scene, name, width_cells=w, height_cells=h, world_x=x * grid, world_y=y * grid
         )
 
-    value = {k.name: k.value for k in rules.kinds}
+    kinds = {k.name: k for k in rules.kinds}
+    grounds = {v.name: v.value for v in rules.grounds}
+    collisions = {v.name: v.value for v in rules.collisions}
     kind_of = {e.name: e.kind for e in (*rules.areas, *rules.paths)}
     for element, cells in placed.cells.items():
-        if kind_of[element] not in value:
+        kind = kinds.get(kind_of[element])
+        if kind is None:
             raise SceneError(f"{element}.kind：[kinds] 裡沒有 {kind_of[element]}")
         level = placed.level_of[element]
-        paint_cells(scene, level, cells=sorted(cells), value=value[kind_of[element]])
+        for layer, value in _kind_values(kind, grounds, collisions):
+            paint_cells(scene, level, cells=sorted(cells), value=value, layer=layer)
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
         iid = element_iid(rules.seed, entity.name)
@@ -106,6 +109,49 @@ def generate_scene(
             layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
     refresh_derived(project)
     return scene, placed
+
+
+def _layer_values(rules: Rules) -> dict[str, list[IntGridValueDef]]:
+    """四個 IntGrid 層的值定義（D-011）：Ground、Collision 照規則檔；Height 到用到的最大階數。"""
+
+    def define(value: int, identifier: str, color: str) -> IntGridValueDef:
+        return {
+            "value": value,
+            "identifier": identifier,
+            "color": color,
+            "tile": None,
+            "groupUid": 0,
+        }
+
+    def declared(values: tuple[LayerValue, ...]) -> list[IntGridValueDef]:
+        return [define(v.value, v.name, v.color) for v in values]
+
+    top = max((k.height for k in rules.kinds), default=0)
+    return {
+        convention.GROUND: declared(rules.grounds),
+        convention.COLLISION: declared(rules.collisions),
+        convention.HEIGHT: [
+            define(n, convention.height_identifier(n), convention.height_color(n))
+            for n in range(1, top + 1)
+        ],
+        convention.SLOPE: [define(1, convention.SLOPE_VALUE, convention.SLOPE_COLOR)],
+    }
+
+
+def _kind_values(
+    kind: Kind, grounds: dict[str, int], collisions: dict[str, int]
+) -> list[tuple[str, int]]:
+    """圖格種類要畫的（層名, 值）；沒寫的層不畫。"""
+    values: list[tuple[str, int]] = []
+    if kind.ground is not None:
+        values.append((convention.GROUND, grounds[kind.ground]))
+    if kind.collision is not None:
+        values.append((convention.COLLISION, collisions[kind.collision]))
+    if kind.height > 0:
+        values.append((convention.HEIGHT, kind.height))
+    if kind.slope:
+        values.append((convention.SLOPE, 1))
+    return values
 
 
 def _entity_count(scene: SceneMap) -> int:

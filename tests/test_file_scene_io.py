@@ -306,7 +306,7 @@ def test_example_add_level_with_layer_type_missing_from_template(tmp_path: Path)
     scene.project["defs"]["layers"].append(tiles)
     level = add_level(scene, "Smithy", width_cells=4, height_cells=4)
     types = [layer["__type"] for layer in level["layerInstances"] or []]
-    assert types == ["IntGrid", "Entities", "Tiles"]
+    assert types == ["Entities", "IntGrid", "IntGrid", "IntGrid", "IntGrid", "Tiles"]
 
 
 def test_example_load_reports_broken_json(tmp_path: Path) -> None:
@@ -323,9 +323,9 @@ def test_example_entity_grid_with_pivot_one(tmp_path: Path) -> None:
     scene = new_scene(tmp_path / "village.ldtk")
     spawn = scene.project["defs"]["entities"][0]
     spawn["pivotX"] = 1
-    layer = (scene.level("Level_0")["layerInstances"] or [])[1]
+    layer = (scene.level("Level_0")["layerInstances"] or [])[0]
     entity = copy.deepcopy(
-        (_template_level_layers()[1])["entityInstances"][0]  # 範本裡的一個 Spawn
+        (_template_level_layers()[0])["entityInstances"][0]  # 範本裡的一個 PlayerSpawn
     )
     entity["px"] = [32, 0]
     layer["entityInstances"].append(entity)

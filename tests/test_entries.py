@@ -37,9 +37,20 @@ def test_example_mcp_round_trip(tmp_path: Path) -> None:
             ("create_scene", {"path": path}),
             (
                 "paint_rect",
-                {"path": path, "level": "Level_0", "x": 0, "y": 0, "width": 16, "value": 1},
+                {
+                    "path": path,
+                    "level": "Level_0",
+                    "x": 0,
+                    "y": 0,
+                    "width": 16,
+                    "value": 1,
+                    "layer": "Collision",
+                },
             ),
-            ("place_entity", {"path": path, "level": "Level_0", "entity": "Spawn", "x": 3, "y": 3}),
+            (
+                "place_entity",
+                {"path": path, "level": "Level_0", "entity": "PlayerSpawn", "x": 3, "y": 3},
+            ),
         ]
         for name, arguments in steps:
             result = await server.call_tool(name, arguments)
@@ -48,7 +59,15 @@ def test_example_mcp_round_trip(tmp_path: Path) -> None:
             assert kinds == ["text", "image"], name
         with pytest.raises(ToolError, match="沒有宣告值 9"):
             await server.call_tool(
-                "paint_rect", {"path": path, "level": "Level_0", "x": 0, "y": 0, "value": 9}
+                "paint_rect",
+                {
+                    "path": path,
+                    "level": "Level_0",
+                    "x": 0,
+                    "y": 0,
+                    "value": 9,
+                    "layer": "Collision",
+                },
             )
 
     asyncio.run(go())
@@ -59,7 +78,7 @@ def test_example_cli_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[st
     """典型：CLI 做同樣的事；錯誤回傳 1 並把訊息寫到 stderr。"""
     path = str(tmp_path / "village.ldtk")
     assert main(["create_scene", path]) == 0
-    assert main(["paint_cells", path, "Level_0", "1", "0,0", "1,0"]) == 0
+    assert main(["paint_cells", path, "Level_0", "1", "0,0", "1,0", "--layer", "Collision"]) == 0
     assert main(["describe_scene", path]) == 0
     assert "Level_0：16x16 格" in capsys.readouterr().out
     assert main(["place_entity", path, "Level_0", "Nope", "0", "0"]) == 1

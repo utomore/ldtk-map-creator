@@ -58,18 +58,22 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("value", type=int)
     p.add_argument("--width", type=int, default=1)
     p.add_argument("--height", type=int, default=1)
-    p.add_argument("--layer")
+    p.add_argument(
+        "--layer", help="圖層名稱；IntGrid 有 Collision、Slope、Height、Ground 四層，要指定"
+    )
     p = command("paint_cells", "把指定的幾格設成某個值")
     p.add_argument("level")
     p.add_argument("value", type=int)
     p.add_argument("cells", type=_cell, nargs="+", help="x,y")
-    p.add_argument("--layer")
+    p.add_argument(
+        "--layer", help="圖層名稱；IntGrid 有 Collision、Slope、Height、Ground 四層，要指定"
+    )
     p = command("place_entity", "擺一個 entity")
     p.add_argument("level")
     p.add_argument("entity")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
-    p.add_argument("--layer")
+    p.add_argument("--layer", help="Entities 圖層名稱；只有一層，可省略")
     p.add_argument("--field", type=_field_value, action="append", default=[], help="名稱=值")
     p = command("move_entity", "移動 entity")
     p.add_argument("iid")

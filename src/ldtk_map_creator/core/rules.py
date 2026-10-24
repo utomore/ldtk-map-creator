@@ -1,4 +1,4 @@
-"""讀規則檔，檢查之後轉成規則資料（D-007、D-009、D-010）。
+"""讀規則檔，檢查之後轉成規則資料（D-007、D-009、D-010、D-011）。
 
 規則檔寫錯一律丟 SceneError，訊息開頭是出錯的位置，例如 `house_2.size`、`level.House1.near`。
 這裡只看規則檔本身；entity 的 type 是不是範本裡的定義，要等生成時對照場景地圖。
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from . import template
+from . import convention, template
 from .errors import SceneError
 from .fields import FIELD_TYPES
 from .scene import IDENTIFIER, RESERVED_NAMES
@@ -31,12 +31,27 @@ DEFAULT_ENTITY_SIZE = (16, 16)
 
 
 @dataclass(frozen=True)
-class Kind:
-    """圖格種類：元素畫成哪個 IntGrid 值、什麼顏色。"""
+class LayerValue:
+    """地面種類（`[grounds]`）或實心種類（`[collisions]`）：名稱、IntGrid 值、預覽顏色（D-011）。"""
 
     name: str
     value: int
     color: str
+
+
+@dataclass(frozen=True)
+class Kind:
+    """圖格種類（D-011）：元素的格子寫進分層慣例的哪幾層。
+
+    `ground`、`collision` 是 `[grounds]`、`[collisions]` 宣告過的名稱；
+    `height` 是 Height 層的階數（0 不畫）；`slope` 為真時 Slope 層畫 1。
+    """
+
+    name: str
+    ground: str | None = None
+    collision: str | None = None
+    height: int = 0
+    slope: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,8 @@ class Rules:
     entities: tuple[EntityRule, ...]
     entity_types: tuple[EntityType, ...]
     portals: tuple[PortalRule, ...]
+    grounds: tuple[LayerValue, ...] = ()
+    collisions: tuple[LayerValue, ...] = ()
 
     @property
     def level_name(self) -> str:
@@ -158,11 +175,22 @@ def load_rules(path: Path) -> Rules:
 
 def parse_rules(data: dict[str, Any]) -> Rules:
     """把 TOML 讀出的資料檢查後轉成規則資料。"""
-    optional = {"kinds", "area", "path", "entity", "entity_types", "portal"}
+    optional = {
+        "grounds",
+        "collisions",
+        "kinds",
+        "area",
+        "path",
+        "entity",
+        "entity_types",
+        "portal",
+    }
     _keys(data, "規則檔", required={"seed", "level"}, optional=optional)
     seed = _int(data["seed"], "seed")
     levels = _levels(data["level"])
-    kinds = _kinds(data.get("kinds", {}))
+    grounds = _layer_values(data.get("grounds", {}), "grounds")
+    collisions = _layer_values(data.get("collisions", {}), "collisions")
+    kinds = _kinds(data.get("kinds", {}), grounds, collisions)
     entity_types = _entity_types(data.get("entity_types", {}))
     areas = tuple(_area(a, f"area[{i}]") for i, a in enumerate(_tables(data, "area")))
     paths = tuple(_path(p, f"path[{i}]") for i, p in enumerate(_tables(data, "path")))
@@ -170,7 +198,9 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     portals = tuple(
         _portal(p, f"portal[{i}]", entity_types) for i, p in enumerate(_tables(data, "portal"))
     )
-    rules = Rules(seed, levels, kinds, areas, paths, entities, entity_types, portals)
+    rules = Rules(
+        seed, levels, kinds, areas, paths, entities, entity_types, portals, grounds, collisions
+    )
     _check_levels(rules)
     _check_links(rules)
     return rules
@@ -357,7 +387,7 @@ def portal_ref_field(types: tuple[EntityType, ...], portal: str, portal_type: st
 
 def _entity_types(raw: object) -> tuple[EntityType, ...]:
     found: list[EntityType] = []
-    # 範本已經有的 entity 定義（Spawn）照舊能用，宣告的類型不能跟它們同名
+    # 範本已經有的 entity 定義（分層慣例的三種，D-011）照舊能用，宣告的類型不能跟它們同名
     builtin = {name.lower() for name in template.entity_identifiers()}
     for name, value in _table(raw, "entity_types").items():
         where = f"entity_types.{name}"
@@ -385,21 +415,71 @@ def _entity_types(raw: object) -> tuple[EntityType, ...]:
     return tuple(found)
 
 
-def _kinds(raw: object) -> tuple[Kind, ...]:
+def _layer_values(raw: object, section: str) -> tuple[LayerValue, ...]:
+    """`[grounds]`、`[collisions]`：名稱 → 值與預覽顏色；同一節內值與名稱都不重複（D-011）。"""
+    found: list[LayerValue] = []
+    for name, value in _table(raw, section).items():
+        where = f"{section}.{name}"
+        _name(name, where)
+        if any(v.name.lower() == name.lower() for v in found):
+            raise SceneError(f"{where}：名稱重複（不分大小寫）")
+        table = _table(value, where)
+        _keys(table, where, required={"value", "color"})
+        number = _int(table["value"], f"{where}.value", minimum=1)
+        taken = next((v for v in found if v.value == number), None)
+        if taken is not None:
+            raise SceneError(f"{where}.value：值 {number} 已經給 {taken.name} 用了")
+        color = _str(table["color"], f"{where}.color")
+        if not _COLOR.fullmatch(color):
+            raise SceneError(f'{where}.color：要是 "#RRGGBB"：{color!r}')
+        found.append(LayerValue(name, number, color))
+    return tuple(found)
+
+
+def _kinds(
+    raw: object, grounds: tuple[LayerValue, ...], collisions: tuple[LayerValue, ...]
+) -> tuple[Kind, ...]:
     kinds: list[Kind] = []
     for name, value in _table(raw, "kinds").items():
         where = f"kinds.{name}"
         _name(name, where)
         table = _table(value, where)
-        _keys(table, where, required={"value", "color"})
-        number = _int(table["value"], f"{where}.value", minimum=1)
-        if any(k.value == number for k in kinds):
-            raise SceneError(f"{where}.value：IntGrid 值 {number} 已經給別的種類用了")
-        color = _str(table["color"], f"{where}.color")
-        if not _COLOR.fullmatch(color):
-            raise SceneError(f'{where}.color：要是 "#RRGGBB"：{color!r}')
-        kinds.append(Kind(name, number, color))
+        for old in ("value", "color"):  # D-011 之前的寫法
+            if old in table:
+                raise SceneError(
+                    f"{where}.{old}：圖格種類改成寫進哪幾層（ground、collision、height、slope）；"
+                    "值與顏色改寫在 [grounds]、[collisions]（D-011）"
+                )
+        _keys(table, where, required=set(), optional={"ground", "collision", "height", "slope"})
+        ground = _declared(table, "ground", where, grounds, "grounds")
+        collision = _declared(table, "collision", where, collisions, "collisions")
+        height = _int(table.get("height", 0), f"{where}.height", minimum=0)
+        if height > convention.MAX_HEIGHT:
+            raise SceneError(f"{where}.height：最多 {convention.MAX_HEIGHT} 階：{height}")
+        slope = table.get("slope", False)
+        if not isinstance(slope, bool):
+            raise SceneError(f"{where}.slope：要是 true 或 false：{slope!r}")
+        if ground is None and collision is None and height == 0 and not slope:
+            # 只寫 height = 0 或 slope = false 也算：哪一層都沒畫，元素在地圖上看不到
+            raise SceneError(
+                f"{where}：至少要寫進一層（ground、collision、height 大於 0、slope = true）"
+            )
+        kinds.append(Kind(name, ground, collision, height, slope))
     return tuple(kinds)
+
+
+def _declared(
+    table: dict[str, Any], key: str, owner: str, declared: tuple[LayerValue, ...], section: str
+) -> str | None:
+    """圖格種類的 ground、collision：要是 `[<section>]` 宣告過的名稱。"""
+    if key not in table:
+        return None
+    name = _name(table[key], f"{owner}.{key}")
+    if name not in {v.name for v in declared}:
+        close = [v.name for v in declared if v.name.lower() == name.lower()]
+        hint = f"（名稱分大小寫，是不是 {close[0]}？）" if close else ""
+        raise SceneError(f"{owner}.{key}：[{section}] 裡沒有 {name}{hint}")
+    return name
 
 
 # 元素之間的關係 ------------------------------------------------------------

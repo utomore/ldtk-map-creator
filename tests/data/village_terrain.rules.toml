@@ -1,0 +1,63 @@
+# 範例規則檔：村莊的地形（D-011）。廣場鋪泥土、房子實心、小丘兩階、小丘南邊一段斜坡。
+seed = 11
+
+[level]
+name = "Village"
+size = [40, 30]  # 格
+
+[grounds]
+grass = { value = 1, color = "#7CB342" }
+dirt = { value = 2, color = "#C8B27A" }
+
+[collisions]
+wall = { value = 1, color = "#000000" }
+water = { value = 2, color = "#2F4CBE" }
+
+[kinds]
+plaza = { ground = "dirt" }
+house = { ground = "dirt", collision = "wall" }
+hill = { ground = "grass", height = 2 }
+ramp = { ground = "grass", height = 1, slope = true }
+pond = { collision = "water" }
+
+[[area]]
+name = "plaza"
+kind = "plaza"
+size = [8, 8]
+at = "center"
+
+[[area]]
+name = "house_1"
+kind = "house"
+size = [5, 4]
+near = "plaza"
+side = "north"
+
+[[area]]
+name = "hill"
+kind = "hill"
+size = [7, 5]
+near = "plaza"
+side = "west"
+gap = 3
+
+[[area]]
+name = "ramp"
+kind = "ramp"
+size = [3, 2]
+near = "hill"
+side = "south"
+gap = 0
+
+[[area]]
+name = "pond"
+kind = "pond"
+size = [4, 3]
+near = "plaza"
+side = "east"
+gap = 3
+
+[[entity]]
+name = "spawn"
+type = "PlayerSpawn"
+at = "plaza.south"
