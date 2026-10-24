@@ -151,7 +151,9 @@ def make_record(
         name: _digest(
             [
                 [level, [cell], *([list(size)] if size != (1, 1) else [])]
-                for (level, cell), size in zip(ends, placed.portal_sizes[name], strict=True)
+                for (level, cell), size in zip(
+                    ends, placed.portal_sizes.get(name, ((1, 1), (1, 1))), strict=True
+                )
             ]
         )
         for name, ends in placed.portals.items()
