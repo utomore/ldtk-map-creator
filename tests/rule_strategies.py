@@ -11,6 +11,7 @@ from ldtk_map_creator.core.layout import layout
 from ldtk_map_creator.core.rules import (
     AREA_ANCHORS,
     DEFAULT_GAP,
+    DEFAULT_GRID,
     PATH_ANCHORS,
     SIDES,
     AreaRule,
@@ -355,11 +356,11 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
                 level["gap"] = lv.gap
         levels.append(level)
     simple = len(levels) == 1 and set(levels[0]) == {"name", "size"} and not array
-    data: dict[str, Any] = {
-        "seed": r.seed,
-        "level": levels[0] if simple else levels,
-        "kinds": {k.name: kind_data(k) for k in r.kinds},
-    }
+    data: dict[str, Any] = {"seed": r.seed}
+    if r.grid != DEFAULT_GRID:
+        data["grid"] = r.grid
+    data["level"] = levels[0] if simple else levels
+    data["kinds"] = {k.name: kind_data(k) for k in r.kinds}
     for key, values in (("grounds", r.grounds), ("collisions", r.collisions)):
         if values:
             data[key] = {v.name: {"value": v.value, "color": v.color} for v in values}
@@ -548,6 +549,8 @@ def to_toml_text(r: Rules) -> str:
 
     data = to_toml_data(r)
     lines = [f"seed = {data['seed']}"]
+    if "grid" in data:
+        lines.append(f"grid = {data['grid']}")
     levels: object = data["level"]
     many = isinstance(levels, list)
     tables = cast(list[dict[str, object]], levels) if many else [cast(dict[str, object], levels)]

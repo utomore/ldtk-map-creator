@@ -41,7 +41,7 @@ def generate_scene(
     `overwrite=True` 時磁碟上已經有這個場景地圖也照樣建，寫檔時蓋掉（重新生成）。
     """
     placed = layout(rules)
-    scene = new_scene(path, split=split, overwrite=overwrite)
+    scene = new_scene(path, split=split, overwrite=overwrite, grid=rules.grid)
     project = scene.project
     layer_defs = {d["identifier"]: d for d in project["defs"]["layers"]}
     for name in convention.LAYERS:

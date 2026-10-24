@@ -389,8 +389,8 @@ def add_entity_def(
     identifier: str,
     *,
     color: str = "#BE4A2F",
-    width: int = 16,
-    height: int = 16,
+    width: int | None = None,
+    height: int | None = None,
     field_types: dict[str, str] | None = None,
 ) -> ActionResult:
     """新增一個 entity 定義。
@@ -441,7 +441,7 @@ def set_entity_fields(
 
 
 @_serialized
-def render_level(path: Path, level: str, *, scale: int = 2) -> ActionResult:
+def render_level(path: Path, level: str, *, scale: int | None = None) -> ActionResult:
     """重新 render 一個 level 的預覽圖，不改動場景地圖。"""
     target = scene.load_scene(path)
     names, note = _names(target, [level], None)

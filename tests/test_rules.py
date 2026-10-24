@@ -1,6 +1,7 @@
 """RULE-1、RULE-2：讀取並檢查規則檔。"""
 
 import copy
+import dataclasses
 import re
 import tomllib
 from pathlib import Path
@@ -34,10 +35,14 @@ BAD_VALUES: list[object] = [True, 1.5, {}, [], "x?"]
 
 @pytest.mark.law("RULE-1")
 @FAST
-@given(rules() | multi_rules(), st.booleans())
-def test_valid_rules_round_trip(expected: Rules, array: bool) -> None:
+@given(rules() | multi_rules(), st.booleans(), st.sampled_from([1, 96, 1024]) | st.integers(1, 256))
+def test_valid_rules_round_trip(expected: Rules, array: bool, grid: int) -> None:
     # 只有一個 level 時，M2 的 [level] 與 D-009 的 [[level]] 兩種寫法都讀得回原樣
     assert parse_rules(to_toml_data(expected, array=array)) == expected
+    # 頂層的 grid 照檔案保留；沒寫是 16
+    assert expected.grid == 16
+    sized = dataclasses.replace(expected, grid=grid)
+    assert parse_rules(to_toml_data(sized, array=array)) == sized
 
 
 def _elements(data: dict[str, Any]) -> list[tuple[str, int, dict[str, Any]]]:
@@ -57,7 +62,7 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         key: data[key] for key in ("grounds", "collisions") if key in data
     }
     options = ["top_key", "level_key", "level_size", "bad_seed", "kind_old_format", "kind_empty"]
-    options += ["kind_field", "kind_part", "bool_int", "level_reserved"]
+    options += ["kind_field", "kind_part", "bool_int", "level_reserved", "bad_grid"]
     if sections:
         options += ["layer_value", "layer_color", "layer_key"]
     if elements:
@@ -84,6 +89,12 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         case "level_size":
             data["level"]["size"][draw(st.integers(0, 1))] = draw(st.integers(-3, 0))
             return data, "level.size"
+        case "bad_grid":
+            # grid 要是 1 到 1024 的整數：0、負數、小數、字串、布林、超過上限都擋下來
+            data["grid"] = draw(
+                st.sampled_from([0, -1, -96, 1.5, 96.0, "96", True, False, [], 1025])
+            )
+            return data, "grid"
         case "bad_seed":
             data["seed"] = draw(st.sampled_from(BAD_VALUES))
             return data, "seed"
@@ -418,6 +429,19 @@ def test_example_village() -> None:
     assert r.areas[2] == AreaRule("house_2", "house", (6, 5), near="plaza", side="east", gap=3)
     assert r.paths == (PathRule("main_road", "road", "plaza", "edge:south", 2),)
     assert r.entities == (EntityRule("spawn", "PlayerSpawn", "main_road.end"),)
+
+
+def test_example_grid_sets_default_entity_size() -> None:
+    """典型：頂層 grid = 96；沒寫 size 的 entity 類型是一格大，寫了 size 的照寫（像素）。"""
+    data = to_toml_data(load_rules(EXAMPLE))
+    data["grid"] = 96
+    data["entity_types"] = {"Sign": {}, "Tower": {"size": [96, 192]}}
+    found = parse_rules(data)
+    assert found.grid == 96
+    assert [(t.name, t.size) for t in found.entity_types] == [
+        ("Sign", (96, 96)),
+        ("Tower", (96, 192)),
+    ]
 
 
 def test_toml_syntax_error(tmp_path: Path) -> None:

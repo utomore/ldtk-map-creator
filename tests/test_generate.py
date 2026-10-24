@@ -429,6 +429,73 @@ def test_file_1_generated_scene_matches_schema(r: Rules, split: bool) -> None:
             assert errors == [], path.name
 
 
+@pytest.mark.law("GEN-9")
+@settings(max_examples=60, deadline=None)
+@given(fitting_rules, st.integers(1, 128), st.booleans())
+def test_gen_9_grid_sets_every_pixel_size(r: Rules, grid: int, split: bool) -> None:
+    placed = _try_layout(r)
+    assume(placed is not None)
+    assert placed is not None
+    sized = dataclasses.replace(r, grid=grid)
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, _ = generate_scene(sized, Path(tmp) / "scene.ldtk", split=split)
+        save_scene(scene)
+        loaded = load_scene(Path(tmp) / "scene.ldtk")
+        for path in Path(tmp).rglob("*.ldtk*"):
+            data = load_json(path)
+            errors = project_errors(data) if path.suffix == ".ldtk" else level_file_errors(data)
+            assert errors == [], path.name
+    assert check_scene(loaded) == []
+    project = loaded.project
+    assert project["defaultGridSize"] == grid
+    # LDtk 編輯器裡新增的 level 是 16 格見方、新增的 entity 定義是一格大
+    assert (project["defaultLevelWidth"], project["defaultLevelHeight"]) == (grid * 16, grid * 16)
+    assert (project["defaultEntityWidth"], project["defaultEntityHeight"]) == (grid, grid)
+    assert [d["gridSize"] for d in project["defs"]["layers"]] == [grid] * 5
+    declared = {t.name: t.size for t in r.entity_types}
+    for edef in project["defs"]["entities"]:  # 範本三種是一格大；宣告的照 size（像素）
+        assert (edef["width"], edef["height"]) == declared.get(edef["identifier"], (grid, grid))
+    pivots = {d["uid"]: (d["pivotX"], d["pivotY"]) for d in project["defs"]["entities"]}
+    for name, (x, y, w, h) in placed.levels.items():  # 世界座標以格為單位，乘上格子大小
+        level = loaded.level(name)
+        assert (level["pxWid"], level["pxHei"]) == (w * grid, h * grid)
+        assert (level["worldX"], level["worldY"]) == (x * grid, y * grid)
+        for layer in level["layerInstances"] or []:
+            assert layer["__gridSize"] == grid
+            for entity in layer["entityInstances"]:
+                edef = next(d for d in project["defs"]["entities"] if d["uid"] == entity["defUid"])
+                assert (entity["width"], entity["height"]) == (edef["width"], edef["height"])
+                px, py = pivots[entity["defUid"]]
+                gx, gy = entity["__grid"]
+                assert entity["px"] == [gx * grid + int(px * grid), gy * grid + int(py * grid)]
+
+
+def test_example_grid_96_and_default(tmp_path: Path) -> None:
+    """典型：grid = 96 的專案檔與 entity 像素；沒寫 grid 維持 16。"""
+    r = load_rules(EXAMPLE)
+    assert r.grid == 16
+    wide = dataclasses.replace(r, grid=96)
+    scene, placed = generate_scene(wide, tmp_path / "wide.ldtk")
+    assert scene.project["defaultGridSize"] == 96
+    spawn = next(
+        e
+        for lv in scene.project["levels"]
+        for ly in lv["layerInstances"] or []
+        for e in ly["entityInstances"]
+        if e["iid"] == element_iid(r.seed, "spawn")
+    )
+    cx, cy = placed.entities["spawn"]
+    assert spawn["px"] == [cx * 96, cy * 96] and (spawn["width"], spawn["height"]) == (96, 96)
+    plain, _ = generate_scene(r, tmp_path / "plain.ldtk")
+    assert plain.project["defaultGridSize"] == 16
+    assert all(d["gridSize"] == 16 for d in plain.project["defs"]["layers"])
+    for bad in (0, 1025):  # 沒經過規則檔檢查的 Rules 也擋（1 到 1024）
+        with pytest.raises(SceneError):
+            generate_scene(dataclasses.replace(r, grid=bad), tmp_path / "bad.ldtk")
+    edge, _ = generate_scene(dataclasses.replace(r, grid=1024), tmp_path / "edge.ldtk")
+    assert edge.project["defaultGridSize"] == 1024
+
+
 def test_example_village() -> None:
     """典型：PlayerSpawn 在主路通到南邊的盡頭，house_2 在廣場東邊隔 3 格。"""
     r = load_rules(EXAMPLE)
@@ -709,7 +776,7 @@ def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
 def test_example_layout_ignores_declared_types() -> None:
     """配置器只算位置：宣告了 entity 類型照樣排得出來（不支援的生成在 generate_scene 擋）。"""
     r = load_rules(EXAMPLE)
-    r = dataclasses.replace(r, entity_types=(EntityType("Sign"),))
+    r = dataclasses.replace(r, entity_types=(EntityType("Sign", "#BE4A2F", (16, 16)),))
     assert layout(r).cells
 
 
@@ -761,7 +828,9 @@ def test_example_other_levels_stay_when_one_changes() -> None:
 
 def test_example_entity_type_errors_name_the_type(tmp_path: Path) -> None:
     """直接組出來、沒經過規則檔檢查的 entity 類型寫錯：訊息開頭是 entity_types.<名稱>。"""
-    r = dataclasses.replace(load_rules(EXAMPLE), entity_types=(EntityType("PlayerSpawn"),))
+    r = dataclasses.replace(
+        load_rules(EXAMPLE), entity_types=(EntityType("PlayerSpawn", "#BE4A2F", (16, 16)),)
+    )
     with pytest.raises(SceneError, match=r"^entity_types\.PlayerSpawn："):
         generate_scene(r, tmp_path / "scene.ldtk")
 
@@ -1008,9 +1077,9 @@ def test_example_declared_tags_reach_definition_and_instance(tmp_path: Path) -> 
     """典型（D-010）：`Spot`、`Debris` 帶 tags、`Plain` 沒寫；定義與實例的 tags 都照宣告。"""
     base = load_rules(EXAMPLE)
     types = (
-        EntityType("Spot", tags=("hidden",)),
-        EntityType("Debris", tags=("world", "hidden")),
-        EntityType("Plain"),
+        EntityType("Spot", "#BE4A2F", (16, 16), tags=("hidden",)),
+        EntityType("Debris", "#BE4A2F", (16, 16), tags=("world", "hidden")),
+        EntityType("Plain", "#BE4A2F", (16, 16)),
     )
     entities = tuple(EntityRule(f"e{i}", t.name, (i, 0), level=None) for i, t in enumerate(types))
     r = dataclasses.replace(base, entity_types=types, entities=entities, portals=())
