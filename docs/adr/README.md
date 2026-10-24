@@ -45,6 +45,7 @@ decision-makers: [帳號]
 | [D-010](design/D-010-entity-types-and-portals.md) | entity 類型由規則檔宣告，傳送點是一種元素 |
 | [D-011](design/D-011-layer-convention.md) | 分層慣例照 WeftEngine 讀的名稱；慣例是下限 |
 | [D-012](design/D-012-generate-guarantees-convention.md) | 生成保證照分層慣例：斜坡不合格就擋下 |
+| [D-013](design/D-013-kind-parts.md) | 圖格種類可以帶零件：生成時在區域中心擺 Part |
 
 ## 流程
 
