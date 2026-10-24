@@ -13,7 +13,7 @@ from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
 from .model import EntityInstance, IntGridValueDef, Level
-from .rules import Kind, LayerValue, Rules, portal_ref_field
+from .rules import EntityRule, Kind, LayerValue, Rules
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -82,19 +82,20 @@ def generate_scene(
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
         iid = element_iid(rules.seed, entity.name)
-        _place(scene, placed.level_of[entity.name], entity.type, (x, y), iid, f"{entity.name}.type")
+        _place_rule_entity(scene, placed.level_of[entity.name], entity, (x, y), iid)
 
-    # 傳送點：兩端各擺一個，用類型唯一的 EntityRef 欄位互指（D-010）
+    # 傳送點：兩端各擺一個 Teleport，用 targetPort 互指（D-010、D-011）
     for portal in rules.portals:
-        ref = portal_ref_field(rules.entity_types, portal.name, portal.type)  # 先檢查再擺
         (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
         start, end = portal_iids(rules.seed, portal.name)
-        first = _place(scene, from_level, portal.type, from_cell, start, f"{portal.name}.from")
+        teleport = convention.TELEPORT
+        first = _place(scene, from_level, teleport, from_cell, start, f"{portal.name}.from")
         # 第二端擺的時候第一端已經在了，直接帶上指向它的值
-        _place(scene, to_level, portal.type, to_cell, end, f"{portal.name}.to", {ref: start})
+        refs: dict[str, object] = {convention.TELEPORT_TARGET: start}
+        _place(scene, to_level, teleport, to_cell, end, f"{portal.name}.to", refs)
         # 第一端的引用直接寫進欄位；__value 由最後的 refresh_derived 補
-        edef = next(d for d in project["defs"]["entities"] if d["identifier"] == portal.type)
-        fdef = next(f for f in edef["fieldDefs"] if f["identifier"] == ref)
+        edef = next(d for d in project["defs"]["entities"] if d["identifier"] == teleport)
+        fdef = next(f for f in edef["fieldDefs"] if f["identifier"] == convention.TELEPORT_TARGET)
         instance = next(f for f in first["fieldInstances"] if f["defUid"] == fdef["uid"])
         fields.set_value(instance, fdef, end)
 
@@ -160,6 +161,27 @@ def _entity_count(scene: SceneMap) -> int:
         for lv in scene.project["levels"]
         for ly in lv["layerInstances"] or []
     )
+
+
+def _place_rule_entity(
+    scene: SceneMap, level: str, entity: EntityRule, cell: tuple[int, int], iid: str
+) -> None:
+    """擺規則檔的 `[[entity]]`，帶上它寫的欄位值。
+
+    欄位不存在或型別不對的錯開頭是 `<元素>.fields.<欄位>`；
+    其餘（類型不存在、數量上限）是 `<元素>.type`。
+    """
+    edef = next(
+        (d for d in scene.project["defs"]["entities"] if d["identifier"] == entity.type), None
+    )
+    if edef is not None:
+        defined = {f["identifier"]: f["__type"] for f in edef["fieldDefs"]}
+        for field, value in entity.fields:
+            kind = defined.get(field)
+            if kind is None or kind == "EntityRef" or not fields.value_fits(kind, value):
+                where = f"{entity.name}.fields.{field}"
+                raise SceneError(f"{where}：{entity.type} 沒有這個欄位，或值的型別不對：{value!r}")
+    _place(scene, level, entity.type, cell, iid, f"{entity.name}.type", dict(entity.fields))
 
 
 def _place(

@@ -1,4 +1,4 @@
-# 範例規則檔：村莊加一間房子的內部，兩邊用傳送點連起來（D-009、D-010）。
+# 範例規則檔：村莊加一間房子的內部，兩邊用傳送點連起來，再在廣場邊擺一棵橡樹（D-009、D-010、D-011）。
 seed = 7
 
 [[level]]
@@ -23,9 +23,6 @@ wall = { value = 1, color = "#8A4B2F" }
 plaza = { ground = "dirt" }
 house = { ground = "dirt", collision = "wall" }
 floor = { ground = "planks" }
-
-[entity_types]
-Portal = { color = "#4FC3F7", size = [16, 16], fields = { target = "EntityRef" } }
 
 [[area]]
 name = "plaza"
@@ -53,3 +50,10 @@ at = "center"
 name = "house_1_door"
 from = "house_1.south"
 to = "room.south"
+
+[[entity]]
+name = "oak_1"
+type = "Part"
+level = "Village"
+at = "plaza.east"
+fields = { part = "oak", yaw = 90 }

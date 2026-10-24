@@ -464,8 +464,12 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     areas = {a.name for a in rules.areas}
-    types = {e.name: e.type for e in rules.entities} | {p.name: p.type for p in rules.portals}
-    new_record = record.make_record(target, placed, areas, types)
+    shapes: dict[str, list[object]] = {
+        # 欄位照名稱排：寫出的檔照定義的順序，規則檔裡換順序不算變了
+        e.name: [e.type, [list(f) for f in sorted(e.fields)]] if e.fields else [e.type]
+        for e in rules.entities
+    }
+    new_record = record.make_record(target, placed, areas, shapes)
     summary = _generate_summary(rules, previous, new_record)
     extra = {record.record_path(path): record.dump(new_record)}
     # 舊地圖有、新地圖沒有的 level（改名或拿掉），預覽圖一起刪；Windows 不分大小寫，比對也不分
@@ -562,9 +566,11 @@ def _generate_summary(rules: Rules, previous: dict[str, Any] | None, new: dict[s
     if previous.get("version") != record.VERSION:
         lines.append("上次的生成紀錄是舊格式，這次不比位置；下次就會列出誰移動了")
         return "\n".join(lines)
-    for i, label in enumerate(("位置變了", "新的", "拿掉了")):
+    for i, (level_label, label) in enumerate(
+        (("位置變了", "位置或欄位變了"), ("新的", "新的"), ("拿掉了", "拿掉了"))
+    ):
         if moved_levels[i]:
-            lines.append(f"level {label}：{'、'.join(moved_levels[i])}")
+            lines.append(f"level {level_label}：{'、'.join(moved_levels[i])}")
         if elements[i]:
             lines.append(f"{label}：{'、'.join(elements[i])}")
     if len(lines) == 1:

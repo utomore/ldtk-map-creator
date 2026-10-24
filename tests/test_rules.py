@@ -14,7 +14,6 @@ from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.rules import (
     AreaRule,
     EntityRule,
-    EntityType,
     Kind,
     LayerValue,
     LevelRule,
@@ -266,6 +265,9 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         options.append("cross_level_ref")
     if portals:
         options += ["portal_anchor", "portal_same_ends", "portal_type"]
+    entities: list[dict[str, Any]] = data.get("entity", [])
+    if entities:
+        options += ["field_unknown", "field_wrong_type", "field_ref"]
     match draw(st.sampled_from(options)):
         case "level_dup":
             if len(levels) == 1:
@@ -335,11 +337,29 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             portal = draw(st.sampled_from(portals))
             portal["to"] = portal["from"]
             return data, f"{portal['name']}.to"
-        case _:  # portal_type
+        case "portal_type":
+            # 傳送點一律是 Teleport，寫了 type 就錯，寫什麼值都一樣
             portal = draw(st.sampled_from(portals))
-            plain = [n for n, ty in types.items() if "EntityRef" not in ty["fields"].values()]
-            portal["type"] = draw(st.sampled_from([*plain, "ZzNope"]))
+            portal["type"] = draw(st.sampled_from(["Teleport", "Part", "ZzNope", *types]))
             return data, f"{portal['name']}.type"
+        case "field_unknown":
+            entity = draw(st.sampled_from(entities))
+            entity["type"] = "Part"
+            entity["fields"] = {"zz": 1}
+            return data, f"{entity['name']}.fields.zz"
+        case "field_wrong_type":
+            # 值的型別跟那個欄位的定義不合：part 是 String、yaw 是 Float
+            entity = draw(st.sampled_from(entities))
+            entity["type"] = "Part"
+            field, value = draw(st.sampled_from([("part", 3), ("part", True), ("yaw", "90")]))
+            entity["fields"] = {field: value}
+            return data, f"{entity['name']}.fields.{field}"
+        case _:  # field_ref
+            # EntityRef 欄位不能寫在 fields 裡（傳送點用 [[portal]]）
+            entity = draw(st.sampled_from(entities))
+            entity["type"] = "Teleport"
+            entity["fields"] = {"targetPort": "x"}
+            return data, f"{entity['name']}.fields.targetPort"
 
 
 @pytest.mark.law("RULE-2")
@@ -396,14 +416,17 @@ def test_23_long_reference_chain() -> None:
 
 
 def test_example_village_with_house() -> None:
-    """典型（D-009、D-010）：兩個 level、一種 entity 類型、一個跨 level 的傳送點（type 省略）。"""
+    """典型（D-009、D-010、D-011）：兩個 level、一個跨 level 的傳送點、一個帶欄位值的 Part。"""
     r = load_rules(EXAMPLE.with_name("village_house.rules.toml"))
     assert [lv.name for lv in r.levels] == ["Village", "House1"]
     assert r.levels[1] == LevelRule("House1", (12, 10), near="Village", side="east", gap=2)
-    assert r.entity_types == (
-        EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"),)),
+    assert r.entity_types == ()
+    assert r.portals == (PortalRule("house_1_door", "house_1.south", "room.south"),)
+    assert r.entities == (
+        EntityRule(
+            "oak_1", "Part", "plaza.east", level="Village", fields=(("part", "oak"), ("yaw", 90))
+        ),
     )
-    assert r.portals == (PortalRule("house_1_door", "Portal", "house_1.south", "room.south"),)
     assert r.level_of(r.areas[2]).name == "House1"
 
 
@@ -445,7 +468,65 @@ def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
         data["area"].append(door)
         data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
     else:
-        data["entity_types"][where.split(".")[1]] = {}
+        data.setdefault("entity_types", {})[where.split(".")[1]] = {}
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+        parse_rules(data)
+
+
+def test_example_portal_with_type_is_refused() -> None:
+    """舊寫法（D-010 原本的 type）：傳送點一律是 Teleport，寫了 type 報錯並說明（D-011）。"""
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    data: dict[str, Any] = tomllib.loads(text)
+    data["portal"][0]["type"] = "Portal"
+    with pytest.raises(SceneError, match=r"^house_1_door\.type：傳送點一律是 Teleport（D-011）"):
+        parse_rules(data)
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "fields", "where"),
+    [
+        ("Part", {"part": "oak", "yaw": 90}, None),  # Float 也收整數
+        ("Part", {"part": "oak", "yaw": 1.5}, None),
+        ("Part", {"yaw": 1.5}, "oak.fields.part"),  # Part 要寫零件名稱
+        ("Part", {"part": " "}, "oak.fields.part"),
+        ("Teleport", {}, "oak.type"),  # Teleport 要成對，用 [[portal]]
+        ("Part", {"yaw": True}, "oak.fields.yaw"),  # bool 不是數字
+        ("Part", {"part": 1}, "oak.fields.part"),
+        ("Part", {"nope": 1}, "oak.fields.nope"),
+        ("Teleport", {"targetPort": "x"}, "oak.fields.targetPort"),  # 指向用 [[portal]]
+        ("Marker", {"count": 1, "ok": False, "ratio": 2, "note": "n"}, None),
+        ("Marker", {"count": 1.5}, "oak.fields.count"),  # Int 不收小數
+        ("Marker", {"count": 2**31}, "oak.fields.count"),  # LDtk 的 Int 是 32 位元
+        ("Typo", {"when": [1]}, "oak.fields.when"),  # 類型不存在也要是純量
+        ("Marker", {"ok": 1}, "oak.fields.ok"),  # Bool 不收整數
+        ("Marker", {"link": "x"}, "oak.fields.link"),
+    ],
+)
+def test_example_entity_field_values(
+    entity_type: str, fields: dict[str, Any], where: str | None
+) -> None:
+    """[[entity]] 的 fields 照那個類型的欄位定義檢查（範本的三種，或 [entity_types] 宣告的）。"""
+    data: dict[str, Any] = {
+        "seed": 1,
+        "level": {"name": "L", "size": [4, 4]},
+        "grounds": {"g": {"value": 1, "color": "#000000"}},
+        "kinds": {"k": {"ground": "g"}},
+        "entity_types": {
+            "Marker": {
+                "fields": {
+                    "count": "Int",
+                    "ok": "Bool",
+                    "ratio": "Float",
+                    "note": "String",
+                    "link": "EntityRef",
+                }
+            }
+        },
+        "entity": [{"name": "oak", "type": entity_type, "at": [0, 0], "fields": fields}],
+    }
+    if where is None:
+        assert dict(parse_rules(data).entities[0].fields) == fields
+        return
     with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
         parse_rules(data)
 

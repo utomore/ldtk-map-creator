@@ -153,7 +153,7 @@ def test_example_one_line_change_moves_one_element(tmp_path: Path) -> None:
     text = rules_file.read_text(encoding="utf-8")
     rules_file.write_text(text.replace('side = "east"', 'side = "west"'), encoding="utf-8")
     result = actions.generate_scene(path)
-    assert "位置變了：house_2" in result.summary
+    assert "位置或欄位變了：house_2" in result.summary
     assert "新的" not in result.summary and "拿掉了" not in result.summary
 
 
@@ -439,10 +439,14 @@ def test_example_old_record_version_is_still_read(tmp_path: Path) -> None:
 
 def test_example_entity_def_color_edit_is_an_edit(tmp_path: Path) -> None:
     """在 LDtk 改了規則宣告的 entity 類型的顏色：算直接改過，不默默蓋掉。"""
-    path = _two_levels(tmp_path)
+    path = tmp_path / "village.ldtk"
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    declared = '[entity_types]\nSign = { color = "#4FC3F7" }\n\n[[area]]'
+    record.rules_path(path).write_text(text.replace("[[area]]", declared, 1), encoding="utf-8")
+    actions.generate_scene(path)
     data = json.loads(path.read_text(encoding="utf-8"))
-    portal = next(d for d in data["defs"]["entities"] if d["identifier"] == "Portal")
-    portal["color"] = "#FF0000"
+    sign = next(d for d in data["defs"]["entities"] if d["identifier"] == "Sign")
+    sign["color"] = "#FF0000"
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SceneError, match="entity 定義改了"):
         actions.generate_scene(path)
@@ -477,22 +481,18 @@ def test_example_old_record_still_gets_names(tmp_path: Path) -> None:
     assert record.labels(dict(old, labels={"level": ["Village"], "names": []}), "Village") == []
 
 
-def test_example_portal_type_change_is_listed(tmp_path: Path) -> None:
-    """只換傳送點的類型（錨點不變），摘要列出它；舊紀錄沒有 portals 時不全列成新的。"""
+def test_example_entity_field_change_is_listed(tmp_path: Path) -> None:
+    """只換 entity 的欄位值（錨點不變），摘要列出它；舊紀錄沒有 portals 時不全列成新的。"""
     path = tmp_path / "village.ldtk"
     text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
-    door = 'Door = { color = "#FFAA00", fields = { to = "EntityRef" } }\n'
-    # 有兩種能互指的類型時，傳送點要寫明用哪一種
-    with_door = text.replace("\n[[area]]", "\n" + door + "\n[[area]]", 1).replace(
-        'name = "house_1_door"', 'name = "house_1_door"\ntype = "Portal"'
-    )
     rules_file = record.rules_path(path)
-    rules_file.write_text(with_door, encoding="utf-8")
+    rules_file.write_text(text, encoding="utf-8")
     actions.generate_scene(path)
-    changed = with_door.replace('type = "Portal"', 'type = "Door"')
+    changed = text.replace("yaw = 90", "yaw = 180")
+    assert changed != text
     rules_file.write_text(changed, encoding="utf-8")
     result = actions.generate_scene(path)
-    assert "位置變了：house_1_door" in result.summary
+    assert "位置或欄位變了：oak_1" in result.summary
     saved = record.read_record(path)
     assert saved is not None
     old = {k: v for k, v in saved.items() if k != "portals"}

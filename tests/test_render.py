@@ -475,10 +475,23 @@ def test_render_6_world_overview(r: Rules, arrangement: str) -> None:
             1 for i in range(w) for j in range(h) if image.getpixel((x + i, y + j)) == frame
         )
         assert background < 0.1 * w * h, level["identifier"]  # level 有畫出來，不是空白
-        # IntGrid 有畫出來：上面三層都沒畫的格，Ground 用到的值，顏色出現在它的範圍裡
+        # IntGrid 有畫出來：上面三層都沒畫、也沒被 entity 方塊蓋到的格，
+        # Ground 用到的值，顏色出現在它的範圍裡
         by_name = {ly["__identifier"]: ly["intGridCsv"] for ly in level["layerInstances"] or []}
         above = zip(by_name["Collision"], by_name["Slope"], by_name["Height"], strict=True)
-        bare = [i for i, cells in enumerate(above) if not any(cells)]
+        cols = level["pxWid"] // 16
+        covered = {
+            (cx, cy)
+            for ly in level["layerInstances"] or []
+            for e in ly["entityInstances"]
+            for cx in range(e["__grid"][0] - 1, e["__grid"][0] + e["width"] // 16 + 1)
+            for cy in range(e["__grid"][1] - 1, e["__grid"][1] + e["height"] // 16 + 1)
+        }
+        bare = [
+            i
+            for i, cells in enumerate(above)
+            if not any(cells) and (i % cols, i // cols) not in covered
+        ]
         used = {by_name["Ground"][i] for i in bare} - {0}
         colors = {_hex(v.color) for v in r.grounds if v.value in used}
         seen = {image.getpixel((x + i, y + j)) for i in range(w) for j in range(h)}

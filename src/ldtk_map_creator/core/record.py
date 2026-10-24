@@ -19,8 +19,10 @@ from .errors import SceneError
 from .layout import Layout
 from .scene import SceneMap
 
-VERSION = 3  # 2：加上預覽圖要寫的元素名稱；3：名稱照 level 分開、記下 level 的位置
-READABLE = (2, VERSION)  # 讀得懂的版本；2 版照舊比對，下次生成就寫成新版
+# 2：加上預覽圖要寫的元素名稱；3：名稱照 level 分開、記下 level 的位置；
+# 4：傳送點不記類型、entity 記欄位值
+VERSION = 4
+READABLE = (2, 3, VERSION)  # 讀得懂的版本；舊版照舊比對，下次生成就寫成新版
 _DEF_NAMES = {"layers": "圖層", "entities": "entity ", "tilesets": "tileset "}
 _EXAMPLES = 3  # 每一層最多列幾格不同的例子
 
@@ -126,20 +128,23 @@ def _fields(owner: object) -> list[list[object]]:
 
 
 def make_record(
-    target: SceneMap, placed: Layout, areas: set[str], types: dict[str, str] | None = None
+    target: SceneMap,
+    placed: Layout,
+    areas: set[str],
+    shapes: dict[str, list[object]] | None = None,
 ) -> dict[str, Any]:
     """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素與 level 的位置（用來說誰移動了），
-    以及每個 level 的預覽圖要寫的元素名稱。`types` 是 entity 與傳送點的類型，
-    只換類型時也算位置變了。
+    以及每個 level 的預覽圖要寫的元素名稱。`shapes` 是 entity 的類型與欄位值
+    （元素名稱 → 類型加上有寫的欄位），只換類型或欄位值時也算變了；沒有欄位值的不多記一項。
     """
-    types = types or {}
+    shapes = shapes or {}
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
         elements[name] = _digest([placed.level_of[name], sorted(cells)])
     for name, cell in placed.entities.items():
-        elements[name] = _digest([placed.level_of[name], [cell], types.get(name)])
+        elements[name] = _digest([placed.level_of[name], [cell], *shapes.get(name, [None])])
     portals = {
-        name: _digest([[[level, [cell]] for level, cell in ends], types.get(name)])
+        name: _digest([[level, [cell]] for level, cell in ends])
         for name, ends in placed.portals.items()
     }
     levels = {name: _digest(list(rect)) for name, rect in placed.levels.items()}
