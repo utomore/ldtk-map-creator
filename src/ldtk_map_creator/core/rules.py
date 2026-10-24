@@ -780,7 +780,7 @@ def _tags(raw: object, where: str) -> tuple[str, ...]:
         raise SceneError(f"{where}：要是字串陣列：{raw!r}")
     found: list[str] = []
     for tag in cast(list[object], raw):
-        text = _str(tag, f"{where}[{len(found)}]")
+        text = _str(tag, where)
         if not text.strip():
             raise SceneError(f"{where}：tag 不能是空白：{text!r}")
         if text in found:

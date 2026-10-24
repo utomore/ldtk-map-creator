@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 
 from ldtk_map_creator.core import template
 from ldtk_map_creator.core.check import check_scene
-from ldtk_map_creator.core.edit import place_entity
+from ldtk_map_creator.core.edit import add_entity_def
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import (
     area_part_iid,
@@ -269,6 +269,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
     got: dict[str, tuple[int, ...]] = {}
     got_parts: dict[str, tuple[str, tuple[int, ...], object, object]] = {}
     grid = loaded.project["defaultGridSize"]
+    declared_tags = {t.name: list(t.tags) for t in r.entity_types}
     for level_name, (lx, ly, width, height) in placed.levels.items():
         level = loaded.level(level_name)
         assert (level["worldX"], level["worldY"]) == (lx * grid, ly * grid)
@@ -299,7 +300,6 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
                     )
                     continue
                 got[by_iid[e["iid"]]] = tuple(e["__grid"])
-                declared_tags = {t.name: list(t.tags) for t in r.entity_types}
                 if rule_of[by_iid[e["iid"]]].type in declared_tags:
                     assert e["__tags"] == declared_tags[rule_of[by_iid[e["iid"]]].type]
                 assert placed.level_of[by_iid[e["iid"]]] == level_name
@@ -1029,14 +1029,11 @@ def test_example_declared_tags_reach_definition_and_instance(tmp_path: Path) -> 
     assert check_scene(scene) == []
 
 
-def test_example_entity_def_tags_still_checked_by_layer_tags(tmp_path: Path) -> None:
-    """邊界（曾經要守住的地方）：圖層的 excluded tags 照舊擋，帶 tags 的類型擺不上去。"""
-    r = dataclasses.replace(
-        load_rules(EXAMPLE), entity_types=(EntityType("Spot", tags=("hidden",)),)
-    )
-    scene, _ = generate_scene(r, tmp_path / "scene.ldtk")
-    place_entity(scene, "Village", "Spot", x=1, y=1)  # 沒有 excluded tags 時擺得上去
-    layer_def = next(d for d in scene.project["defs"]["layers"] if d["identifier"] == "Entities")
-    layer_def["excludedTags"] = ["hidden"]
-    with pytest.raises(SceneError):
-        place_entity(scene, "Village", "Spot", x=2, y=2)
+def test_example_add_entity_def_rejects_bad_tags(tmp_path: Path) -> None:
+    """邊界（D-010）：直接新增 entity 定義時，空白或重複的 tags 被拒絕，場景地圖不變。"""
+    scene, _ = generate_scene(load_rules(EXAMPLE), tmp_path / "scene.ldtk")
+    before = len(scene.project["defs"]["entities"])
+    for bad in (["  "], [""], ["a", "a"]):
+        with pytest.raises(SceneError):
+            add_entity_def(scene, "Spot", tags=bad)
+    assert len(scene.project["defs"]["entities"]) == before
