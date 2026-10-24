@@ -423,10 +423,16 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             return data, f"{entity['name']}.fields.targetPort"
 
 
+def _has_entities_and_fixed_ends(r: Rules) -> bool:
+    ends = [e for p in r.portals for e in (p.start, p.to)]
+    return bool(r.entities) and any(isinstance(e, FixedEnd) for e in ends)
+
+
 @st.composite
 def broken_placement(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     """D-014 的寫法弄壞一處：entity 的 size 與 offset、傳送點的固定端點、覆寫、split。"""
-    good = draw(placement_rules())
+    # 有 entity、有固定端點，每一種弄壞的辦法才都有東西可以弄壞
+    good = draw(placement_rules().filter(_has_entities_and_fixed_ends))
     data = copy.deepcopy(to_toml_data(good, array=True))
     entities: list[dict[str, Any]] = data.get("entity", [])
     fixed = [e for e in entities if isinstance(e["at"], list)]
@@ -891,4 +897,25 @@ def test_example_end_without_level_in_single_level_rules() -> None:
     assert r.portals[0] == PortalRule("p", FixedEnd(None, (0, 0)), FixedEnd(None, (3, 3), (2, 2)))
     data["portal"][0]["to"]["level"] = "Other"
     with pytest.raises(SceneError, match=r"^p\.to\.level："):
+        parse_rules(data)
+
+
+@pytest.mark.parametrize(
+    ("to", "refused"),
+    [
+        ({"level": "Home", "at": [1, 1], "size": [2, 2]}, True),  # 跟 from 同一個矩形
+        ({"level": "Home", "at": [2, 2], "size": [2, 2]}, True),  # 重疊 1 格
+        ({"level": "Home", "at": [3, 1], "size": [2, 2]}, False),  # 只碰到邊：不算重疊
+        ({"level": "Farm", "at": [1, 1], "size": [2, 2]}, False),  # 座標一樣但在不同 level
+    ],
+)
+def test_example_fixed_ends_of_one_portal(to: dict[str, Any], refused: bool) -> None:
+    """邊界：同一個傳送點的兩個固定端點，在同一個 level 裡矩形重疊才報錯，報在 to。"""
+    data = tomllib.loads(PLACEMENT.read_text(encoding="utf-8"))
+    twin = {"name": "twin", "from": {"level": "Home", "at": [1, 1], "size": [2, 2]}, "to": to}
+    data["portal"].append(twin)
+    if not refused:
+        assert parse_rules(data).portals[-1].name == "twin"
+        return
+    with pytest.raises(SceneError, match=r"^twin\.to：兩端的位置重疊"):
         parse_rules(data)
