@@ -41,6 +41,12 @@
 - **SCENE-7**：刪掉一個 entity 之後，沒有 EntityRef 指向它；欄位不存在、型別不對、不能是空的卻給空值、EntityRef 指向不存在的 entity，都會被拒絕，場景地圖不變。
 - **SCENE-8**：新建的場景地圖與生成的場景地圖，圖層定義由上到下是 `Entities`、`Collision`、`Slope`、`Height`、`Ground`（D-011），entity 定義有 `PlayerSpawn`（tags `player`）、`Teleport`（`targetPort`，EntityRef）、`Part`（`part` 字串、`yaw` 浮點）；每個 level（含新增的）都有這五層的實例；規則宣告的 entity 類型不帶 tags。
 
+## CONV：分層慣例
+
+- **CONV-1**：新建的場景地圖（含新增的 level）通過慣例檢查；生成的場景地圖也通過，唯一的例外是規則把斜坡種類畫在四周沒有高一階的格的地方（這時只會報「斜坡四周沒有高一階的格」，不會報別的）。
+- **CONV-2**：場景地圖有以下任何一處違反，檢查都會報出來，每一處一行，開頭寫出 level、層或 entity 與位置：層定義缺少、重複、型別不對；`Slope` 宣告了 1 以外的值；`Height` 宣告了小於 1 的值；level 缺少某一層的實例；IntGrid 格的值不是 0 也沒宣告；`Slope` 不是 0 的格四周（北東南西）沒有 `Height` 剛好高一階的格；`PlayerSpawn` 缺少定義或 tags `player`；`Teleport` 缺少定義或 `targetPort`（EntityRef）；`Part` 缺少定義或 `part`（String）、`yaw`（Float）；`Teleport` 的 `targetPort` 是空的、指到自己、指到不存在的 entity 或不是 `Teleport` 的 entity；`Part` 的 `part` 是空白的。同一份場景地圖查兩次，輸出完全相同（順序照定義，再照 level、層、格）；檢查不改場景地圖，操作也不寫任何檔、不出預覽圖。
+- **CONV-3**：慣例是下限：多一層、IntGrid 層多宣告的值（`Slope` 只能是 1、`Height` 要 ≥ 1）、entity 定義多的 tags 與欄位、多的 entity 定義與實例，都不報。
+
 ## ENTRY：入口
 
 - **ENTRY-1**：`core/actions.py` 的每個操作，都有同名的 MCP 工具與 CLI 指令，沒有多也沒有少。

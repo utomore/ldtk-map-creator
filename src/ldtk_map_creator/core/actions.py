@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from . import edit, record, scene
+from . import check, edit, record, scene
 from . import generate as generation
 from . import render as rendering
 from .derived import cell_count, refresh_derived
@@ -30,6 +30,7 @@ from .scene import SceneMap
 ACTIONS = (
     "create_scene",
     "describe_scene",
+    "check_scene",
     "add_level",
     "paint_rect",
     "paint_cells",
@@ -46,11 +47,15 @@ ACTIONS = (
 
 @dataclass(frozen=True)
 class ActionResult:
-    """操作的結果：給人看的摘要、這次更新的預覽圖，與新擺的 entity 的 iid（有的話）。"""
+    """操作的結果：給人看的摘要、這次更新的預覽圖，與新擺的 entity 的 iid（有的話）。
+
+    `ok` 為假表示操作跑完了但結果是「有問題」（例如慣例檢查找到問題）；CLI 以此決定結束碼。
+    """
 
     summary: str
     previews: tuple[Path, ...] = ()
     iid: str | None = None
+    ok: bool = True
 
 
 # 操作是「讀、改、寫」的交易；MCP 會在多個執行緒同時跑工具，所以全部排隊執行
@@ -205,6 +210,21 @@ def describe_scene(path: Path) -> ActionResult:
     target = scene.load_scene(path)
     refresh_derived(target.project)  # 只在記憶體裡重算，位置不靠檔案裡可能過期的 __grid
     return ActionResult(_describe(target))
+
+
+@_serialized
+def check_scene(path: Path) -> ActionResult:
+    """檢查場景地圖照不照分層慣例（D-011），列出每一處不照的地方；唯讀，不寫檔、不出預覽圖。"""
+    target = scene.load_scene(path)
+    try:
+        problems = check.check_scene(target)
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        # 手改過或殘缺的檔：讀得進來，但少了 LDtk 一定會寫的欄位
+        raise SceneError(f"場景地圖的結構不完整，查不了慣例：{error!r}") from error
+    if not problems:
+        return ActionResult("照分層慣例，沒有問題")
+    lines = [f"不照分層慣例，共 {len(problems)} 處：", *(f"  - {p}" for p in problems)]
+    return ActionResult("\n".join(lines), ok=False)
 
 
 def _describe(target: SceneMap) -> str:

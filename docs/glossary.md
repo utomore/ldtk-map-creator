@@ -29,6 +29,7 @@
 | 欄位 | entity 上一個有名字、有型別的值（LDtk 的 field），例如傳送點的 `targetPort`；不是規則檔裡元素的欄位 | `FieldDef`、`FieldInstance`、`core/fields.py`；規則檔 `[[entity]]` 帶的欄位值是 `EntityRule.fields` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
 | 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接（D-011）；是下限，其他 LDtk 功能照用；不是某款遊戲專用的層名 | `core/convention.py` |
+| 慣例檢查 | 讀一個場景地圖，列出每一處不照分層慣例的地方；唯讀，慣例是下限所以多的層、欄位、tags 不報；不是 LDtk 的 JSON schema 驗證（FILE-1），也不是跟生成紀錄比對有沒有被直接改過（GEN-6） | `check_scene`、`core/check.py` |
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level`；規則檔裡的是 `LevelRule` |
 | 操作 | 入口直接呼叫的單位：讀場景地圖、做一件事、寫回、更新預覽圖；一個操作對應一個 MCP 工具與一個 CLI 指令。不是 core 裡單純改記憶體的函式 | `core/actions.py` |
 | 預覽圖 | 一個 level render 成的 PNG，存在 `previews/<主檔名>/<level>.png`；不是 LDtk 自己匯出的圖 | `render_level`、`write_preview` |
