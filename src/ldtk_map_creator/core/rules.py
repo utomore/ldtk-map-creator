@@ -29,7 +29,8 @@ AREA_ANCHORS = ("center", *SIDES)
 PATH_ANCHORS = ("start", "end")
 DEFAULT_GAP = 2
 DEFAULT_ENTITY_COLOR = "#BE4A2F"
-DEFAULT_ENTITY_SIZE = (16, 16)
+DEFAULT_GRID = 16
+DEFAULT_ENTITY_SIZE = (DEFAULT_GRID, DEFAULT_GRID)
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,7 @@ class Rules:
     portals: tuple[PortalRule, ...]
     grounds: tuple[LayerValue, ...] = ()
     collisions: tuple[LayerValue, ...] = ()
+    grid: int = DEFAULT_GRID  # 格子大小（像素）；生成的專案檔、entity 與 level 的像素都照它
 
     @property
     def level_name(self) -> str:
@@ -179,6 +181,7 @@ def load_rules(path: Path) -> Rules:
 def parse_rules(data: dict[str, Any]) -> Rules:
     """把 TOML 讀出的資料檢查後轉成規則資料。"""
     optional = {
+        "grid",
         "grounds",
         "collisions",
         "kinds",
@@ -190,11 +193,12 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     }
     _keys(data, "規則檔", required={"seed", "level"}, optional=optional)
     seed = _int(data["seed"], "seed")
+    grid = _int(data.get("grid", DEFAULT_GRID), "grid", minimum=1)
     levels = _levels(data["level"])
     grounds = _layer_values(data.get("grounds", {}), "grounds")
     collisions = _layer_values(data.get("collisions", {}), "collisions")
     kinds = _kinds(data.get("kinds", {}), grounds, collisions)
-    entity_types = _entity_types(data.get("entity_types", {}))
+    entity_types = _entity_types(data.get("entity_types", {}), grid)
     areas = tuple(_area(a, f"area[{i}]") for i, a in enumerate(_tables(data, "area")))
     paths = tuple(_path(p, f"path[{i}]") for i, p in enumerate(_tables(data, "path")))
     entities = tuple(
@@ -202,7 +206,17 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     )
     portals = tuple(_portal(p, f"portal[{i}]") for i, p in enumerate(_tables(data, "portal")))
     rules = Rules(
-        seed, levels, kinds, areas, paths, entities, entity_types, portals, grounds, collisions
+        seed,
+        levels,
+        kinds,
+        areas,
+        paths,
+        entities,
+        entity_types,
+        portals,
+        grounds,
+        collisions,
+        grid,
     )
     _check_levels(rules)
     _check_links(rules)
@@ -414,7 +428,7 @@ def _portal(raw: object, where: str) -> PortalRule:
     return PortalRule(name, start, to)
 
 
-def _entity_types(raw: object) -> tuple[EntityType, ...]:
+def _entity_types(raw: object, grid: int) -> tuple[EntityType, ...]:
     found: list[EntityType] = []
     # 範本已經有的 entity 定義（分層慣例的三種，D-011）照舊能用，宣告的類型不能跟它們同名
     builtin = {name.lower() for name in template.entity_identifiers()}
@@ -430,7 +444,7 @@ def _entity_types(raw: object) -> tuple[EntityType, ...]:
         color = _str(table.get("color", DEFAULT_ENTITY_COLOR), f"{where}.color")
         if not _COLOR.fullmatch(color):
             raise SceneError(f'{where}.color：要是 "#RRGGBB"：{color!r}')
-        size = _size(table.get("size", list(DEFAULT_ENTITY_SIZE)), f"{where}.size")
+        size = _size(table.get("size", [grid, grid]), f"{where}.size")  # 沒寫就是一格大
         fields: list[tuple[str, str]] = []
         for field, kind in _table(table.get("fields", {}), f"{where}.fields").items():
             _name(field, f"{where}.fields.{field}")

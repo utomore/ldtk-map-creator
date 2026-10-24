@@ -168,6 +168,8 @@ class Project(TypedDict):
     jsonVersion: str
     nextUid: int
     defaultGridSize: int
+    worldGridWidth: int
+    worldGridHeight: int
     defaultLevelBgColor: str
     externalLevels: bool
     dummyWorldIid: str

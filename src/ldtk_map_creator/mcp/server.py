@@ -144,7 +144,7 @@ def delete_entity(path: str, iid: str) -> Reply:
 
 
 @server.tool()
-def render_level(path: str, level: str, scale: int = 2) -> Reply:
+def render_level(path: str, level: str, scale: int | None = None) -> Reply:
     """重新 render 一個 level 的預覽圖，不改動場景地圖。"""
     return _reply(lambda: actions.render_level(Path(path), level, scale=scale))
 
@@ -164,8 +164,8 @@ def add_entity_def(
     path: str,
     identifier: str,
     color: str = "#BE4A2F",
-    width: int = 16,
-    height: int = 16,
+    width: int | None = None,
+    height: int | None = None,
     field_types: dict[str, str] | None = None,
 ) -> Reply:
     """新增一個 entity 定義。

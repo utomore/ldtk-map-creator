@@ -369,12 +369,12 @@ def add_entity_def(
     identifier: str,
     *,
     color: str = "#BE4A2F",
-    width: int = 16,
-    height: int = 16,
+    width: int | None = None,
+    height: int | None = None,
     field_types: dict[str, str] | None = None,
     tags: Sequence[str] = (),
 ) -> EntityDef:
-    """新增一個 entity 定義。
+    """新增一個 entity 定義；沒給大小就是一格大（專案的格子大小）。
 
     `field_types` 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
     `tags` 是字串，不能空白、不能重複。
@@ -386,6 +386,8 @@ def add_entity_def(
         raise SceneError(f"已經有同名的 entity 定義（不分大小寫）：{identifier}")
     if not _COLOR.fullmatch(color):
         raise SceneError(f'顏色要是 "#RRGGBB"：{color!r}')
+    width = project["defaultGridSize"] if width is None else width
+    height = project["defaultGridSize"] if height is None else height
     if width < 1 or height < 1:
         raise SceneError(f"entity 尺寸至少 1 像素：{width}x{height}")
     wanted = field_types or {}

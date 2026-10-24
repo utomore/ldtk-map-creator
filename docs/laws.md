@@ -15,11 +15,12 @@
 - **GEN-6**：生成之後直接改過場景地圖（畫格、擺放、移動、刪除 entity、新增 level），不帶 force 的重新生成一律拒絕、磁碟上的檔不變、訊息列出差異；帶 force 就照規則蓋掉，結果跟剛生成時相同。
 - **GEN-7**：世界佈局裡 level 彼此不重疊；用 `at` 的 level 在指定的世界座標（第一個沒寫就在 (0, 0)）；用 `near` 的 level 跟對象剛好隔 `gap` 格、面對面（不是斜對角），寫了 `side` 就在那一邊。
 - **GEN-8**：每個傳送點在兩端的錨點上各生成一個 `Teleport`（不寫類型），兩端不在同一格、也不跟同一個 level 的別的 entity 同格；兩個 `Teleport` 的 `targetPort` 互指（可以跨 level），iid 由 seed 加傳送點名稱推出。
+- **GEN-9**：規則檔頂層的 `grid`（沒寫是 16）決定格子大小：生成的專案檔 `defaultGridSize`、每一層的 `gridSize` 與 `__gridSize` 都等於它；每個 level 的像素大小與世界座標是格數乘以它；每個 entity 的 `px` 是格座標乘以它加上 pivot 的偏移，大小等於它的定義；範本三種 entity 定義與沒寫 `size` 的宣告類型是一格大（`grid`×`grid`），寫了 `size` 的照寫（像素）；生成的場景地圖通過慣例檢查與官方 schema。
 
 ## RULE：規則檔
 
-- **RULE-1**：合法的規則檔讀進來不報錯；每個欄位的值與同一種元素、level、entity 類型、地面種類、實心種類、圖格種類的順序、以及 entity 類型的 `tags`（沒寫是空的）、`[[entity]]` 的 `fields`（欄位名稱與值）都照檔案保留（圖格種類的 `ground`、`collision`、`height`、`slope`、`part`、`yaw` 都是選填，沒寫的取預設值：沒有、沒有、0、假、沒有、0；`yaw` 整數也收，存成小數）；只有一個 level 時，`[level]` 與 `[[level]]` 兩種寫法讀出來一樣。
-- **RULE-2**：規則檔有一處不合法（未知或缺少的欄位、型別不對、尺寸小於 1、固定的位置或大小超出 level、元素名稱重複、指向不存在的元素、種類、錨點或 level、指向別的 level 的東西（傳送點除外）、有好幾個 level 卻沒寫元素在哪個 level、路徑起點等於終點、元素或 level 互相指向成環、level 名稱只差大小寫、`[[portal]]` 寫了 `type`、entity 類型的 `tags` 不是字串陣列、是空字串或只有空白的字串、或重複、`[[entity]]` 的 `fields` 欄位不存在或值的型別不對（Int、Float、Bool、String；Float 也收整數）、`fields` 裡寫 EntityRef 欄位、`[[entity]]` 的類型是 `Teleport`（要成對，用 `[[portal]]`）、`Part` 沒寫零件名稱或 `part` 是空白、傳送點兩端是同一個錨點或同一個區域的同一格、用 at 固定位置的 level 互相重疊、`[grounds]` 或 `[collisions]` 的值小於 1 或同一節內重複、顏色不是 #RRGGBB、圖格種類一層都沒寫進也沒帶零件（四個欄位和 `part` 都沒寫，或只寫了 `height = 0`、`slope = false`）、`part` 不是字串或是空白、`yaw` 不是有限的數字（含布林）、只寫 `yaw` 沒寫 `part`、路徑用了帶零件的種類、entity 或傳送點的錨點指到帶零件區域的 `.center`（零件的格）（D-013）、`ground` 或 `collision` 不是宣告過的名稱、`height` 不是 0 到 64 的整數、`slope` 不是布林、圖格種類出現舊寫法的 `value` 或 `color`、entity 類型跟 `PlayerSpawn`、`Teleport`、`Part` 同名），讀取丟 SceneError，訊息開頭寫出出錯的元素與欄位，例如 `house_2.size`、`oak_1.fields.yaw`。
+- **RULE-1**：合法的規則檔讀進來不報錯；頂層的 `grid` 照檔案保留（選填，沒寫是 16）；每個欄位的值與同一種元素、level、entity 類型、地面種類、實心種類、圖格種類的順序、以及 entity 類型的 `tags`（沒寫是空的）、`[[entity]]` 的 `fields`（欄位名稱與值）都照檔案保留（圖格種類的 `ground`、`collision`、`height`、`slope`、`part`、`yaw` 都是選填，沒寫的取預設值：沒有、沒有、0、假、沒有、0；`yaw` 整數也收，存成小數）；只有一個 level 時，`[level]` 與 `[[level]]` 兩種寫法讀出來一樣。
+- **RULE-2**：規則檔有一處不合法（未知或缺少的欄位、`grid` 不是正整數（含布林、小數、字串）、型別不對、尺寸小於 1、固定的位置或大小超出 level、元素名稱重複、指向不存在的元素、種類、錨點或 level、指向別的 level 的東西（傳送點除外）、有好幾個 level 卻沒寫元素在哪個 level、路徑起點等於終點、元素或 level 互相指向成環、level 名稱只差大小寫、`[[portal]]` 寫了 `type`、entity 類型的 `tags` 不是字串陣列、是空字串或只有空白的字串、或重複、`[[entity]]` 的 `fields` 欄位不存在或值的型別不對（Int、Float、Bool、String；Float 也收整數）、`fields` 裡寫 EntityRef 欄位、`[[entity]]` 的類型是 `Teleport`（要成對，用 `[[portal]]`）、`Part` 沒寫零件名稱或 `part` 是空白、傳送點兩端是同一個錨點或同一個區域的同一格、用 at 固定位置的 level 互相重疊、`[grounds]` 或 `[collisions]` 的值小於 1 或同一節內重複、顏色不是 #RRGGBB、圖格種類一層都沒寫進也沒帶零件（四個欄位和 `part` 都沒寫，或只寫了 `height = 0`、`slope = false`）、`part` 不是字串或是空白、`yaw` 不是有限的數字（含布林）、只寫 `yaw` 沒寫 `part`、路徑用了帶零件的種類、entity 或傳送點的錨點指到帶零件區域的 `.center`（零件的格）（D-013）、`ground` 或 `collision` 不是宣告過的名稱、`height` 不是 0 到 64 的整數、`slope` 不是布林、圖格種類出現舊寫法的 `value` 或 `color`、entity 類型跟 `PlayerSpawn`、`Teleport`、`Part` 同名），讀取丟 SceneError，訊息開頭寫出出錯的元素與欄位，例如 `house_2.size`、`oak_1.fields.yaw`。
 
 ## FILE：讀寫檔
 
@@ -53,7 +54,7 @@
 
 ## RENDER：預覽圖
 
-- **RENDER-1**：PNG 的尺寸是座標邊框加上 level 像素乘以倍率：`(MARGIN + pxWid × scale, MARGIN + pxHei × scale)`。
+- **RENDER-1**：PNG 的尺寸是座標邊框加上 level 像素乘以倍率：`(MARGIN + pxWid × scale, MARGIN + pxHei × scale)`；倍率沒給時，格子 32 像素以下是 2、更大是 1。
 - **RENDER-2**：沒被 entity 或名稱蓋住的 IntGrid 格，格子中心的顏色是看得見的最上層非 0 值定義的顏色（圖層不透明時）；圖層半透明（displayOpacity 小於 1）時，跟下面看得見的顏色按透明度混合；全部是 0 的格是 level 背景色。
 - **RENDER-3**：每個 entity 方塊中心的顏色是它定義的顏色。
 - **RENDER-4**：同一個環境裡，同一份場景地圖 render 兩次、或寫出再讀回後 render，PNG 的位元組完全相同；render 不改動場景地圖。

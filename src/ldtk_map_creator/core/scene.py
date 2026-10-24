@@ -68,8 +68,27 @@ def _empty_layers(project: Project, level: Level, rng: random.Random) -> list[La
     return layers
 
 
-def new_scene(path: Path, *, split: bool = True, overwrite: bool = False) -> SceneMap:
+def _set_grid(project: Project, grid: int) -> None:
+    """範本寫死 16；把專案的格子大小、各層、範本 entity 定義的大小與範本 level 的像素大小換成 grid。
+
+    範本 level 是 16×16 格，格數不變，像素跟著格子大小。
+    """
+    project["defaultGridSize"] = grid
+    project["worldGridWidth"] = project["worldGridHeight"] = grid * 16
+    for ldef in project["defs"]["layers"]:
+        ldef["gridSize"] = grid
+    for edef in project["defs"]["entities"]:
+        edef["width"] = edef["height"] = grid
+    for level in project["levels"]:
+        level["pxWid"] = level["pxHei"] = grid * 16
+
+
+def new_scene(
+    path: Path, *, split: bool = True, overwrite: bool = False, grid: int = 16
+) -> SceneMap:
     """從範本建一個新的場景地圖，含一個空的 `Level_0`；還沒寫檔。
+
+    `grid` 是格子大小（像素），範本預設 16。
 
     `overwrite=True` 時不管磁碟上已經有的檔（重新生成用；寫檔時才蓋掉）。
     """
@@ -81,7 +100,10 @@ def new_scene(path: Path, *, split: bool = True, overwrite: bool = False) -> Sce
         leftover = path.parent / path.stem
         if leftover.is_dir() and any(leftover.glob("*.ldtkl")):
             raise SceneError(f"{leftover} 裡已經有 level 檔，不覆蓋；先移走再建")
+    if grid < 1:
+        raise SceneError(f"格子大小至少 1 像素：{grid}")
     project = template.project()
+    _set_grid(project, grid)
     project["iid"] = ""
     project["dummyWorldIid"] = ""
     project["externalLevels"] = split

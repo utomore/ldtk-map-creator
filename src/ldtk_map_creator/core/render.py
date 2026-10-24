@@ -80,16 +80,24 @@ Label = tuple[str, float, float]
 """元素名稱與寫在哪裡：格座標，可以有小數（例如區域的正中央）。"""
 
 
+def default_scale(project: Project) -> int:
+    """預設倍率：格子 32 像素以下放大 2 倍，更大的格子（例如 96）不放大，圖才不會大到難開。"""
+    return 2 if project["defaultGridSize"] <= 32 else 1
+
+
 def render_level(
-    scene: SceneMap, level_id: str, *, scale: int = 2, labels: Sequence[Label] = ()
+    scene: SceneMap, level_id: str, *, scale: int | None = None, labels: Sequence[Label] = ()
 ) -> Image.Image:
-    """render 一個 level；`scale` 是每個 LDtk 像素放大幾倍。不改動場景地圖。
+    """render 一個 level；`scale` 是每個 LDtk 像素放大幾倍，沒給就照格子大小（`default_scale`）。
+
+    不改動場景地圖。
 
     `labels` 是要寫上去的元素名稱；沒給就跟沒有規則檔的場景地圖一樣，不寫。
     """
+    project = scene.project
+    scale = default_scale(project) if scale is None else scale
     if scale < 1:
         raise SceneError(f"倍率至少 1：{scale}")
-    project = scene.project
     level = scene.level(level_id)
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
@@ -141,10 +149,11 @@ _SMALLEST_NAME = 6
 
 
 def name_boxes(
-    scene: SceneMap, level_id: str, labels: Sequence[Label], *, scale: int = 2
+    scene: SceneMap, level_id: str, labels: Sequence[Label], *, scale: int | None = None
 ) -> list[NameBox]:
     """元素名稱實際寫在哪裡、多大；render 照這份畫。放不下的名稱不在裡面。"""
     project = scene.project
+    scale = default_scale(project) if scale is None else scale
     level = scene.level(level_id)
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}

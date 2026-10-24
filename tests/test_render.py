@@ -83,6 +83,17 @@ scenes = st.tuples(
 
 
 @pytest.mark.law("RENDER-1")
+@pytest.mark.parametrize(("grid", "scale"), [(1, 2), (16, 2), (32, 2), (33, 1), (96, 1)])
+def test_example_default_scale_follows_grid(tmp_path: Path, grid: int, scale: int) -> None:
+    """倍率沒給時：格子 32 像素以下放大 2 倍，更大的不放大（96 的格子不會畫出一張超大圖）。"""
+    scene = new_scene(tmp_path / "scene.ldtk", grid=grid)
+    level = scene.level("Level_0")
+    image = render_level(scene, "Level_0")
+    assert image.size == image_size(level, scale)
+    assert image.size == render_level(scene, "Level_0", scale=scale).size
+
+
+@pytest.mark.law("RENDER-1")
 @pytest.mark.law("RENDER-2")
 @pytest.mark.law("RENDER-3")
 @FAST
