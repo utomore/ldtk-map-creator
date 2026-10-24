@@ -214,7 +214,9 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         case "bad_type":
             key, i, element = draw(st.sampled_from(elements))
             field = draw(st.sampled_from(sorted(element)))
-            element[field] = draw(st.sampled_from(BAD_VALUES))
+            # 空表格是合法的 fields（Part 缺零件名稱是另一個錯，報在 fields.part），不當成型別錯
+            values = [v for v in BAD_VALUES if not (field == "fields" and v == {})]
+            element[field] = draw(st.sampled_from(values))
             where = f"{key}[{i}]" if field == "name" else element["name"]
             return data, f"{where}.{field}"
         case "missing_kind_or_ref":
