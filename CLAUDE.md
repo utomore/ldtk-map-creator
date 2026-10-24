@@ -72,5 +72,6 @@
 - 讀寫 LDtk 從 LDtk 1.5.3 存的空專案範本出發；只為動到的部分寫型別；`__` 衍生欄位、`iid`、`uid`、`nextUid` 由同一個函式統一補，沒動到的欄位原樣保留（D-006）。
 - 一個場景地圖一組檔：`<名>.ldtk`、`<名>/*.ldtkl`（拆開存時）、`<名>.rules.toml`（含 seed）、`<名>.generated.json`（生成紀錄，D-008）、`previews/<名>/<level>.png` 與 `previews/<名>/world-overview.png`（世界總覽）；照 `externalLevels` 決定存法，新建預設拆開（D-002）。
 - 每次改動場景地圖都要輸出 PNG 預覽（P-001）。
+- 擺零件（`Part` 的 `part`、圖格種類的 `part`）之前，先問我參考哪個遊戲的零件資料夾（例如 WeftEngine 的 `examples/pixel3d/assets/content/parts/`），讀過裡面有哪些零件才寫；不憑空取零件名稱（D-013）。
 - 寫出的檔要通過官方 `JSON_SCHEMA.json`（LDtk 1.5.3）驗證；「LDtk 打得開」寫進驗收條件，手動驗（P-004）。
 - pyright strict、ruff 全綠才合併（P-004）。
