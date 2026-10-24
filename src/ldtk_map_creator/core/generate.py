@@ -13,8 +13,8 @@ from .edit import add_entity_def, paint_cells, place_entity
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
-from .model import EntityInstance, IntGridValueDef, Level
-from .rules import Cell, EntityRule, Kind, LayerValue, Rules
+from .model import EntityInstance, IntGridValueDef, Level, Project
+from .rules import Cell, ConventionOverride, EntityRule, Kind, LayerValue, Rules
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -51,6 +51,7 @@ def generate_scene(
             raise SceneError(f"範本要剛好一個 {wanted} 圖層叫 {name}，現在是 {found}（D-011）")
     for name, values in _layer_values(rules).items():
         layer_defs[name]["intGridValues"] = values
+    _apply_overrides(project, rules.overrides)
     # 規則宣告的 entity 類型變成 LDtk 的 entity 定義，加在範本的三種 entity 旁邊（D-010、D-011）
     for kind in rules.entity_types:
         width, height = kind.size
@@ -94,7 +95,8 @@ def generate_scene(
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
         iid = element_iid(rules.seed, entity.name)
-        _place_rule_entity(scene, placed.level_of[entity.name], entity, (x, y), iid)
+        instance = _place_rule_entity(scene, placed.level_of[entity.name], entity, (x, y), iid)
+        _fit(instance, grid, entity.size, entity.offset)
 
     # 種類帶零件的區域：中心那格擺一個 Part（D-013），順序照區域在規則檔的順序（配置器排好的）
     area_kind = {a.name: a.kind for a in rules.areas}
@@ -114,16 +116,20 @@ def generate_scene(
         (from_level, from_cell), (to_level, to_cell) = placed.portals[portal.name]
         start, end = portal_iids(rules.seed, portal.name)
         teleport = convention.TELEPORT
+        first_size, second_size = placed.portal_sizes[portal.name]
         first = _place(scene, from_level, teleport, from_cell, start, f"{portal.name}.from")
+        _fit(first, grid, first_size, (0, 0))
         # 第二端擺的時候第一端已經在了，直接帶上指向它的值
         refs: dict[str, object] = {convention.TELEPORT_TARGET: start}
-        _place(scene, to_level, teleport, to_cell, end, f"{portal.name}.to", refs)
+        second = _place(scene, to_level, teleport, to_cell, end, f"{portal.name}.to", refs)
+        _fit(second, grid, second_size, (0, 0))
         # 第一端的引用直接寫進欄位；__value 由最後的 refresh_derived 補
         edef = next(d for d in project["defs"]["entities"] if d["identifier"] == teleport)
         fdef = next(f for f in edef["fieldDefs"] if f["identifier"] == convention.TELEPORT_TARGET)
         instance = next(f for f in first["fieldInstances"] if f["defUid"] == fdef["uid"])
         fields.set_value(instance, fdef, end)
 
+    _mark_resizable(project)
     project["iid"] = derived_iid(rules.seed, "project")
     project["dummyWorldIid"] = derived_iid(rules.seed, "world")
     defs = {d["uid"]: d["identifier"] for d in project["defs"]["layers"]}
@@ -135,6 +141,39 @@ def generate_scene(
             layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
     refresh_derived(project)
     return scene, placed
+
+
+def _apply_overrides(project: Project, overrides: tuple[ConventionOverride, ...]) -> None:
+    """規則檔覆寫的分層慣例 entity：改定義的顏色與 tags，沒寫的維持範本的值（D-014）。"""
+    for override in overrides:
+        edef = next(
+            (d for d in project["defs"]["entities"] if d["identifier"] == override.name), None
+        )
+        if edef is None:
+            raise SceneError(f"entity_types.{override.name}：範本裡沒有這個 entity 定義")
+        if override.color is not None:
+            edef["color"] = override.color
+        if override.tags is not None:
+            edef["tags"] = list(override.tags)
+
+
+def _fit(instance: EntityInstance, grid: int, size: Cell | None, offset: Cell) -> None:
+    """照規則給實例大小（格）與格內位移（像素）；`px` 是左上角（定義的 pivot 是 (0, 0)）。"""
+    if offset != (0, 0):
+        instance["px"] = [instance["px"][0] + offset[0], instance["px"][1] + offset[1]]
+    if size is not None:
+        instance["width"], instance["height"] = size[0] * grid, size[1] * grid
+
+
+def _mark_resizable(project: Project) -> None:
+    """有實例的大小跟定義不同的 entity 定義，設成可以縮放，LDtk 才不會把實例改回定義的大小。"""
+    defs = {d["uid"]: d for d in project["defs"]["entities"]}
+    for level in project["levels"]:
+        for layer in level["layerInstances"] or []:
+            for entity in layer["entityInstances"]:
+                edef = defs[entity["defUid"]]
+                if (entity["width"], entity["height"]) != (edef["width"], edef["height"]):
+                    edef["resizableX"] = edef["resizableY"] = True
 
 
 def _check_slope_cells(scene: SceneMap, level: str, sloped: dict[str, frozenset[Cell]]) -> None:
@@ -210,7 +249,7 @@ def _entity_count(scene: SceneMap) -> int:
 
 def _place_rule_entity(
     scene: SceneMap, level: str, entity: EntityRule, cell: tuple[int, int], iid: str
-) -> None:
+) -> EntityInstance:
     """擺規則檔的 `[[entity]]`，帶上它寫的欄位值。
 
     欄位不存在或型別不對的錯開頭是 `<元素>.fields.<欄位>`；
@@ -226,7 +265,7 @@ def _place_rule_entity(
             if kind is None or kind == "EntityRef" or not fields.value_fits(kind, value):
                 where = f"{entity.name}.fields.{field}"
                 raise SceneError(f"{where}：{entity.type} 沒有這個欄位，或值的型別不對：{value!r}")
-    _place(scene, level, entity.type, cell, iid, f"{entity.name}.type", dict(entity.fields))
+    return _place(scene, level, entity.type, cell, iid, f"{entity.name}.type", dict(entity.fields))
 
 
 def _place(

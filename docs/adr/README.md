@@ -46,6 +46,7 @@ decision-makers: [帳號]
 | [D-011](design/D-011-layer-convention.md) | 分層慣例照 WeftEngine 讀的名稱；慣例是下限 |
 | [D-012](design/D-012-generate-guarantees-convention.md) | 生成保證照分層慣例：斜坡不合格就擋下 |
 | [D-013](design/D-013-kind-parts.md) | 圖格種類可以帶零件：生成時在區域中心擺 Part |
+| [D-014](design/D-014-entity-placement.md) | entity 與傳送點可以指定位置與大小，慣例 entity 可以改外觀，存法可以由規則檔指定 |
 
 ## 流程
 

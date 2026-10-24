@@ -72,6 +72,8 @@ class EntityDef(TypedDict):
     color: str
     pivotX: float
     pivotY: float
+    resizableX: bool
+    resizableY: bool
     tags: list[str]
     fieldDefs: list[FieldDef]
     tileRect: object

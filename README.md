@@ -7,7 +7,7 @@
 - 現在做到：M4 分層慣例。
   - 從規則檔生成多個 level 的場景地圖：地面、牆、高度、斜坡、傳送點、零件，每步回傳預覽圖與世界總覽。
   - 照 WeftEngine 讀的分層慣例寫出（D-011），`check_scene` 檢查照不照慣例。
-  - 規則檔怎麼畫地形見 `docs/guide/terrain.md`。
+  - 規則檔怎麼畫地形見 `docs/guide/terrain.md`；怎麼指定 entity 與傳送點的位置與大小、改慣例 entity 的外觀、固定存法見 `docs/guide/placement.md`。
 - 不做：服務其他 LDtk 使用者、引擎端的匯入程式、其他地圖格式、遊戲執行時即時生成。
 
 ## 開始

@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.rules import (
     AreaRule,
+    ConventionOverride,
     EntityRule,
+    FixedEnd,
     Kind,
     LayerValue,
     LevelRule,
@@ -24,11 +26,19 @@ from ldtk_map_creator.core.rules import (
     load_rules,
     parse_rules,
 )
-from tests.rule_strategies import multi_rules, rules, to_toml_data, width_limit
+from tests.rule_strategies import (
+    entity_fits,
+    multi_rules,
+    placement_rules,
+    rules,
+    to_toml_data,
+    width_limit,
+)
 
 FAST = settings(max_examples=300, deadline=None)
 BROKEN = settings(max_examples=1000, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
+PLACEMENT = Path(__file__).parent / "data" / "placement.rules.toml"
 MISSING = "zz_missing_ref"  # 比策略產生的名稱長，不會撞名
 BAD_VALUES: list[object] = [True, 1.5, {}, [], "x?"]
 
@@ -42,7 +52,17 @@ def test_valid_rules_round_trip(expected: Rules, array: bool, grid: int) -> None
     # 頂層的 grid 照檔案保留；沒寫是 16
     assert expected.grid == 16
     sized = dataclasses.replace(expected, grid=grid)
+    # 宣告的類型大小是像素：格子變小，擺在邊上的 entity 可能超出 level（RULE-2）
+    assume(all(entity_fits(sized, e) for e in sized.entities))
     assert parse_rules(to_toml_data(sized, array=array)) == sized
+
+
+@pytest.mark.law("RULE-1")
+@FAST
+@given(placement_rules(), st.booleans())
+def test_placement_rules_round_trip(expected: Rules, array: bool) -> None:
+    """D-014 的寫法讀得回原樣：entity 的 size 與 offset、傳送點的固定端點、覆寫、split。"""
+    assert parse_rules(to_toml_data(expected, array=array)) == expected
 
 
 def _elements(data: dict[str, Any]) -> list[tuple[str, int, dict[str, Any]]]:
@@ -403,9 +423,134 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             return data, f"{entity['name']}.fields.targetPort"
 
 
+@st.composite
+def broken_placement(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
+    """D-014 的寫法弄壞一處：entity 的 size 與 offset、傳送點的固定端點、覆寫、split。"""
+    good = draw(placement_rules())
+    data = copy.deepcopy(to_toml_data(good, array=True))
+    entities: list[dict[str, Any]] = data.get("entity", [])
+    fixed = [e for e in entities if isinstance(e["at"], list)]
+    portals: list[dict[str, Any]] = data.get("portal", [])
+    ends = [(p, f) for p in portals for f in ("from", "to") if isinstance(p[f], dict)]
+    levels = {lv["name"]: lv["size"] for lv in data["level"]}
+    first = data["level"][0]["name"]
+    names = ["PlayerSpawn", "Teleport", "Part"]
+    options = ["split_bad", "override_key", "override_empty", "override_case", "override_color"]
+    options += ["override_tags", "spawn_without_player"]
+    if entities:
+        options += ["offset_range", "offset_type", "size_bad"]
+    if fixed:
+        options += ["size_too_big", "rect_out"]
+    if ends:
+        options += ["end_key", "end_no_at", "end_out", "end_level"]
+    if any(isinstance(p["from"], dict) for p in portals):
+        options.append("ends_overlap")
+    match draw(st.sampled_from(options)):
+        case "split_bad":
+            bad_splits: list[object] = [0, 1, "true", [], {}, 1.5]
+            data["split"] = draw(st.sampled_from(bad_splits))
+            return data, "split"
+        case "override_key":
+            name = draw(st.sampled_from(names))
+            key = draw(st.sampled_from(["size", "fields", "extra"]))
+            data.setdefault("entity_types", {})[name] = {"color": "#000000", key: [1, 1]}
+            return data, f"entity_types.{name}.{key}"
+        case "override_empty":
+            name = draw(st.sampled_from(names))
+            data.setdefault("entity_types", {})[name] = {}
+            return data, f"entity_types.{name}"
+        case "override_case":
+            # 名稱分大小寫：寫成小寫報錯，訊息指到那個名稱
+            name = draw(st.sampled_from(names)).lower()
+            data.setdefault("entity_types", {})[name] = {"color": "#000000"}
+            return data, f"entity_types.{name}"
+        case "override_color":
+            name = draw(st.sampled_from(names))
+            bad = draw(st.sampled_from([*BAD_VALUES, "#12345", "red", "#GGGGGG"]))
+            data.setdefault("entity_types", {})[name] = {"color": bad}
+            return data, f"entity_types.{name}.color"
+        case "override_tags":
+            name = draw(st.sampled_from(names))
+            bad_tags = draw(st.sampled_from(["x", [1], [""], ["  "], ["a", "a"], {"a": 1}]))
+            data.setdefault("entity_types", {})[name] = {"tags": bad_tags}
+            return data, f"entity_types.{name}.tags"
+        case "spawn_without_player":
+            # 分層慣例：PlayerSpawn 的 tags 一定要有 player，覆寫也不能拿掉
+            tags = draw(st.sampled_from([[], ["spawn"], ["Player"]]))
+            data.setdefault("entity_types", {})["PlayerSpawn"] = {"tags": tags}
+            return data, "entity_types.PlayerSpawn.tags"
+        case "offset_range":
+            entity = draw(st.sampled_from(entities))
+            grid = good.grid
+            entity["offset"] = draw(st.sampled_from([[grid, 0], [0, grid], [-1, 0], [0, grid + 5]]))
+            return data, f"{entity['name']}.offset"
+        case "offset_type":
+            entity = draw(st.sampled_from(entities))
+            bad_offsets: list[object] = [[True, 0], [0, 1.5], ["1", 0], [1], [0, 0, 0], 3, "x", {}]
+            entity["offset"] = draw(st.sampled_from(bad_offsets))
+            return data, f"{entity['name']}.offset"
+        case "size_bad":
+            entity = draw(st.sampled_from(entities))
+            bad_sizes: list[object] = [
+                [0, 1],
+                [1, -1],
+                [True, 1],
+                [1, 1.5],
+                [1],
+                [1, 1, 1],
+                2,
+                "1x1",
+            ]
+            entity["size"] = draw(st.sampled_from(bad_sizes))
+            return data, f"{entity['name']}.size"
+        case "size_too_big":
+            entity = draw(st.sampled_from(fixed))
+            w, h = levels[entity.get("level", first)]
+            entity["size"] = draw(st.sampled_from([[w + 1, 1], [1, h + 1]]))
+            return data, f"{entity['name']}.size"
+        case "rect_out":
+            # 擺在最後一格，再寫兩格寬的 size：矩形出界，報在 at
+            entity = draw(st.sampled_from(fixed))
+            w, _ = levels[entity.get("level", first)]
+            entity["at"] = [w - 1, 0]
+            entity["size"] = [2, 1]
+            entity.pop("offset", None)
+            return data, f"{entity['name']}.at"
+        case "end_key":
+            portal, field = draw(st.sampled_from(ends))
+            portal[field]["extra"] = 1
+            return data, f"{portal['name']}.{field}.extra"
+        case "end_no_at":
+            portal, field = draw(st.sampled_from(ends))
+            del portal[field]["at"]
+            return data, f"{portal['name']}.{field}.at"
+        case "end_out":
+            portal, field = draw(st.sampled_from(ends))
+            end = portal[field]
+            w, _ = levels[end.get("level", first)]
+            if draw(st.booleans()):
+                end["at"], end["size"] = [w, 0], [1, 1]
+                return data, f"{portal['name']}.{field}.at"
+            end["at"], end["size"] = [0, 0], [w + 1, 1]
+            return data, f"{portal['name']}.{field}.size"
+        case "end_level":
+            portal, field = draw(st.sampled_from(ends))
+            end = portal[field]
+            if len(levels) > 1 and draw(st.booleans()):
+                end.pop("level", None)  # 有好幾個 level 時一定要寫
+            else:
+                end["level"] = "Zz_nowhere"
+            return data, f"{portal['name']}.{field}.level"
+        case _:  # ends_overlap
+            both = [p for p in portals if isinstance(p["from"], dict)]
+            portal = draw(st.sampled_from(both))
+            portal["to"] = dict(portal["from"])  # 同一個 level、同一個矩形：兩端重疊
+            return data, f"{portal['name']}.to"
+
+
 @pytest.mark.law("RULE-2")
 @BROKEN
-@given(broken() | broken_multi())
+@given(broken() | broken_multi() | broken_placement())
 def test_broken_rules_are_rejected(case: tuple[dict[str, Any], str]) -> None:
     data, wheres = case
     with pytest.raises(SceneError) as error:
@@ -511,9 +656,10 @@ def test_example_only_portals_cross_levels(case: str, where: str) -> None:
     ],
 )
 def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
-    """傳送點兩端在同一格、類型跟範本的 PlayerSpawn、Teleport、Part 撞名（D-011），都報錯。
+    """傳送點兩端在同一格、宣告的類型跟範本的名字撞名（D-011），都報錯。
 
-    1 格高的區域，north 與 south 是同一格。
+    1 格高的區域，north 與 south 是同一格。範本的 Teleport、Part 寫成空表格是沒有覆寫任何東西；
+    名稱分大小寫，`playerspawn` 不是 `PlayerSpawn`（D-014）。
     """
     text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
     data: dict[str, Any] = tomllib.loads(text)
@@ -711,3 +857,38 @@ def test_example_anchor_on_area_part_is_refused() -> None:
         parse_rules(data)
     data["entity"][0]["at"] = "home.north"
     parse_rules(data)
+
+
+def test_example_placement() -> None:
+    """典型（D-014）：size、offset、固定端點、覆寫、split 都讀成寫的樣子。"""
+    r = load_rules(PLACEMENT)
+    assert (r.grid, r.split) == (96, False)
+    spawn, house_a, house_b, house_c = r.entities
+    assert (spawn.offset, spawn.size, spawn.level) == ((48, 72), None, "Home")
+    assert (house_a.size, house_a.offset) == (None, (0, 0))
+    assert (house_b.size, house_c.size) == ((3, 3), (6, 3))
+    assert r.portals[0].start == FixedEnd("Home", (0, 3), (1, 3))
+    assert r.portals[1].start == FixedEnd("Farm", (18, 19), (3, 1))
+    assert r.overrides == (ConventionOverride("Teleport", "#30e1b9", ("tele",)),)
+    assert [t.name for t in r.entity_types] == ["House"]  # 覆寫不算宣告的類型
+
+
+def test_example_unwritten_placement_keeps_the_old_reading() -> None:
+    """邊界：沒用到 D-014 寫法的規則檔，沒有 size、offset 是 (0, 0)、沒有覆寫、split 沒指定。"""
+    r = load_rules(EXAMPLE)
+    assert r.split is None and r.overrides == ()
+    assert all(e.size is None and e.offset == (0, 0) for e in r.entities)
+
+
+def test_example_end_without_level_in_single_level_rules() -> None:
+    """邊界：只有一個 level 時，固定端點可以不寫 level；寫的話要是那個 level。"""
+    data: dict[str, Any] = {
+        "seed": 1,
+        "level": {"name": "L", "size": [6, 6]},
+        "portal": [{"name": "p", "from": {"at": [0, 0]}, "to": {"at": [3, 3], "size": [2, 2]}}],
+    }
+    r = parse_rules(data)
+    assert r.portals[0] == PortalRule("p", FixedEnd(None, (0, 0)), FixedEnd(None, (3, 3), (2, 2)))
+    data["portal"][0]["to"]["level"] = "Other"
+    with pytest.raises(SceneError, match=r"^p\.to\.level："):
+        parse_rules(data)

@@ -44,7 +44,7 @@ decision-makers: [utomore]
   - `[grounds]` 宣告地面種類、`[collisions]` 宣告實心的種類：各自的值與預覽顏色。
   - `[kinds]` 的圖格種類改成「寫進哪幾層」：`ground`、`collision`（填上面宣告的名稱）、`height`、`slope`；也可以帶零件（D-013）。
   - `[[portal]]` 一律生成 `Teleport`；`[[entity]]` 可以帶欄位值，例如 `part = "oak"`。
-  - `[entity_types]` 只宣告遊戲自己的 entity，不能用上面三個名稱。
+  - `[entity_types]` 宣告遊戲自己的 entity；用上面三個名稱寫的是覆寫它的 `color`、`tags`（`PlayerSpawn` 的 tags 要有 `player`），名稱、大小與欄位不能改（D-014）。
 
 ```toml
 [grounds]

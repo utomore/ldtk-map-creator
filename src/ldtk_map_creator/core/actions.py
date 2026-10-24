@@ -24,7 +24,7 @@ from .derived import cell_count, refresh_derived
 from .errors import SceneError
 from .files import atomic_write
 from .model import Project
-from .rules import Rules, load_rules
+from .rules import EntityRule, Rules, load_rules
 from .scene import SceneMap
 
 ACTIONS = (
@@ -133,7 +133,8 @@ def _commit(
     }
     folder = target.path.parent / target.path.stem
     names = {lv["identifier"] for lv in levels}
-    stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
+    # 單檔存時 save_scene 會刪掉子資料夾裡所有 .ldtkl（原本拆開存、現在改單檔），都要能還原
+    stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names or not target.split}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
     touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | remove
     # 世界總覽（D-002）：重新生成、有 level 變了、level 的組成或位置變了、或還沒畫過才重畫
@@ -481,14 +482,12 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                     f"{path} 在上次生成之後被直接改過，不覆蓋：\n{listed}\n"
                     "要保留這些改動，就把它們寫進規則檔；確定要蓋掉就帶 force"
                 )
+    if rules.split is not None:  # 規則檔指定存法就照它，不看磁碟上原本怎麼存（D-014）
+        split = rules.split
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     areas = {a.name for a in rules.areas}
-    shapes: dict[str, list[object]] = {
-        # 欄位照名稱排：寫出的檔照定義的順序，規則檔裡換順序不算變了
-        e.name: [e.type, [list(f) for f in sorted(e.fields)]] if e.fields else [e.type]
-        for e in rules.entities
-    }
+    shapes = {e.name: _entity_shape(e) for e in rules.entities}
     kinds = {k.name: k for k in rules.kinds}
     area_kind = {a.name: a.kind for a in rules.areas}
     for name in placed.parts:  # 區域零件的名稱與方向（D-013）
@@ -504,6 +503,22 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     # 規則涵蓋每個 level：就算沒變，每個 level 的預覽圖都回傳
     every = [lv.name for lv in rules.levels]
     return _commit(target, before, summary, every, extra=extra, remove=remove, generated=new_record)
+
+
+def _entity_shape(entity: EntityRule) -> list[object]:
+    """生成紀錄裡一個 entity 的類型、欄位值，加上寫了才有的 `size`、`offset`（D-014）。
+
+    欄位照名稱排：寫出的檔照定義的順序，規則檔裡換順序不算變了。
+    """
+    fields = [list(f) for f in sorted(entity.fields)]
+    placement: dict[str, list[int]] = {}
+    if entity.size is not None:
+        placement["size"] = list(entity.size)
+    if entity.offset != (0, 0):
+        placement["offset"] = list(entity.offset)
+    if placement:
+        return [entity.type, fields, placement]
+    return [entity.type, fields] if fields else [entity.type]
 
 
 def _names(
