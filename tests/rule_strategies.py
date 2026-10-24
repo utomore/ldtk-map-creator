@@ -25,6 +25,17 @@ from ldtk_map_creator.core.rules import (
 )
 from ldtk_map_creator.core.scene import RESERVED_NAMES
 
+# 宣告的 entity 類型的 tags：不空白、不重複，也可能是空的
+entity_tags: st.SearchStrategy[tuple[str, ...]] = st.lists(
+    st.text(
+        st.characters(codec="utf-8", exclude_categories=("Cc", "Cs", "Zs", "Zl", "Zp")),
+        min_size=1,
+        max_size=8,
+    ),
+    unique=True,
+    max_size=3,
+).map(tuple)
+
 
 def width_limit(to: str, level_size: tuple[int, int]) -> int:
     """路徑最寬能多寬，獨立於 core 另寫一次：南北向不能比 level 寬，東西向不能比 level 高。"""
@@ -390,6 +401,7 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
     if r.entity_types:
         data["entity_types"] = {
             et.name: {"color": et.color, "size": list(et.size), "fields": dict(et.fields)}
+            | ({"tags": list(et.tags)} if et.tags else {})
             for et in r.entity_types
         }
     for key, items in (("area", areas), ("path", paths), ("entity", entities), ("portal", portals)):
@@ -631,11 +643,12 @@ def multi_rules(draw: st.DrawFn) -> Rules:
     types: list[EntityType] = []
     if draw(st.booleans()):
         extra = tuple((f"f{i}", draw(field_type)) for i in range(draw(st.integers(0, 2))))
-        types.append(EntityType("Marker", "#4FC3F7", (16, 16), (("link", "EntityRef"), *extra)))
+        fields = (("link", "EntityRef"), *extra)
+        types.append(EntityType("Marker", "#4FC3F7", (16, 16), fields, draw(entity_tags)))
     if draw(st.booleans()):
         fields = tuple((f"g{i}", draw(field_type)) for i in range(draw(st.integers(0, 3))))
         size = (draw(st.integers(1, 32)), draw(st.integers(1, 32)))
-        types.append(EntityType("Sign", "#FFFFFF", size, fields))
+        types.append(EntityType("Sign", "#FFFFFF", size, fields, draw(entity_tags)))
     every_anchor = [a for lv in levels for a in anchors[lv.name]]
     sizes = {area.name: area.size for area in areas}
 
@@ -745,7 +758,7 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     entities = [e for part in moved for e in part.entities]
     if draw(st.booleans()):
         sign = (("label", "String"), ("count", "Int"))
-        types.append(EntityType("Sign", "#FFFFFF", (16, 16), sign))
+        types.append(EntityType("Sign", "#FFFFFF", (16, 16), sign, draw(entity_tags)))
         entities = [
             replace(e, type="Sign", fields=draw(field_values(sign))) if draw(st.booleans()) else e
             for e in entities

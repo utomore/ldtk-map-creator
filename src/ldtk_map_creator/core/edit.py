@@ -5,6 +5,7 @@
 """
 
 import re
+from collections.abc import Sequence
 from typing import cast
 
 from . import fields, template
@@ -371,10 +372,12 @@ def add_entity_def(
     width: int = 16,
     height: int = 16,
     field_types: dict[str, str] | None = None,
+    tags: Sequence[str] = (),
 ) -> EntityDef:
     """新增一個 entity 定義。
 
     `field_types` 是欄位名稱 → 型別（Int、Float、Bool、String、EntityRef）。
+    `tags` 是字串，不能空白、不能重複。
     """
     project = scene.project
     if not IDENTIFIER.fullmatch(identifier):
@@ -393,6 +396,11 @@ def add_entity_def(
             raise SceneError(f"欄位 {name} 的型別要是 {'、'.join(fields.FIELD_TYPES)}：{kind}")
     if len({n.lower() for n in wanted}) != len(wanted):
         raise SceneError(f"欄位名稱重複（不分大小寫）：{list(wanted)}")
+    for tag in tags:
+        if not tag.strip():
+            raise SceneError(f"tag 不能是空白：{tag!r}")
+    if len(set(tags)) != len(tags):
+        raise SceneError(f"tag 重複：{list(tags)}")
     uids = allocate_uids(project, 1 + len(wanted))
     edef = template.entity_def()
     edef["identifier"] = identifier
@@ -400,6 +408,7 @@ def add_entity_def(
     edef["color"] = color
     edef["width"] = width
     edef["height"] = height
+    edef["tags"] = list(tags)
     for (name, kind), uid in zip(wanted.items(), uids[1:], strict=True):
         fdef = template.field_def(kind)
         fdef["identifier"] = name

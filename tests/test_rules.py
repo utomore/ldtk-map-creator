@@ -268,7 +268,7 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     elements = [(k, e) for k, _, e in _elements(data)]
     portals: list[dict[str, Any]] = data.get("portal", [])
     types: dict[str, dict[str, Any]] = data.get("entity_types", {})
-    options = ["level_dup", "type_bad_color", "type_bad_field", "level_key"]
+    options = ["level_dup", "type_bad_color", "type_bad_field", "type_bad_tags", "level_key"]
     if len(levels) > 1:
         options += ["level_near_missing", "level_no_position", "level_cycle"]
         if elements:
@@ -315,6 +315,14 @@ def broken_multi(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             name = draw(st.sampled_from(sorted(types)))
             types[name]["fields"]["zz"] = "Color"
             return data, f"entity_types.{name}.fields.zz"
+        case "type_bad_tags":
+            if not types:
+                return data | {"extra": 1}, "規則檔.extra"
+            name = draw(st.sampled_from(sorted(types)))
+            types[name]["tags"] = draw(
+                st.sampled_from(["world", [1], [""], ["  "], ["a", "a"], {"a": 1}, None])
+            )
+            return data, f"entity_types.{name}.tags"
         case "level_near_missing":
             level = draw(st.sampled_from(levels[1:]))
             level.pop("at", None)

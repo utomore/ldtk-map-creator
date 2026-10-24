@@ -8,7 +8,7 @@
 ## GEN：生成
 
 - **GEN-1**：同一份規則（含 seed）生成並寫出兩次，所有檔逐位元組相同；每個 entity 的 iid 由 seed 加元素名稱推出。
-- **GEN-2**：生成成功時，每個元素都在它所在的 level 裡；區域與路徑都在 level 內、同一個 level 裡彼此不重疊；靠近別人的區域跟其他區域至少隔一格（彼此靠近的兩個除外）、跟靠近的對象剛好隔 `gap` 格；路徑接得上起點，另一頭接得上終點或通到那一邊；錨點在元素自己的格裡，路徑的 start 靠起點、end 靠終點；每一層（Collision、Slope、Height、Ground）每格是佔它的元素的圖格種類寫進那一層的值，沒寫或沒被佔的是 0；各層的值定義來源固定：Ground 照 `[grounds]`、Collision 照 `[collisions]`、Height 是 1 到圖格種類用到的最大階數、Slope 只有 1；每個 entity 擺在它的錨點或指定的格，不跟同一個 level 的 entity 擺在同一格；圖格種類帶 `part` 的每個區域，中心（`center` 錨點）那一格有一個對應的 `Part`，`part`、`yaw` 照種類，也不跟同一個 level 的別的 entity 同格（D-013）；每個 entity 的類型、欄位值照規則：規則寫的欄位是那個值，沒寫的是預設值；宣告的 entity 類型生成為同名、同顏色、同大小、同欄位的定義；每個 level 寫在它在世界佈局裡的位置。
+- **GEN-2**：生成成功時，每個元素都在它所在的 level 裡；區域與路徑都在 level 內、同一個 level 裡彼此不重疊；靠近別人的區域跟其他區域至少隔一格（彼此靠近的兩個除外）、跟靠近的對象剛好隔 `gap` 格；路徑接得上起點，另一頭接得上終點或通到那一邊；錨點在元素自己的格裡，路徑的 start 靠起點、end 靠終點；每一層（Collision、Slope、Height、Ground）每格是佔它的元素的圖格種類寫進那一層的值，沒寫或沒被佔的是 0；各層的值定義來源固定：Ground 照 `[grounds]`、Collision 照 `[collisions]`、Height 是 1 到圖格種類用到的最大階數、Slope 只有 1；每個 entity 擺在它的錨點或指定的格，不跟同一個 level 的 entity 擺在同一格；圖格種類帶 `part` 的每個區域，中心（`center` 錨點）那一格有一個對應的 `Part`，`part`、`yaw` 照種類，也不跟同一個 level 的別的 entity 同格（D-013）；每個 entity 的類型、欄位值照規則：規則寫的欄位是那個值，沒寫的是預設值；宣告的 entity 類型生成為同名、同顏色、同大小、同欄位、同 tags 的定義，擺出去的實例 `__tags` 跟定義相同；每個 level 寫在它在世界佈局裡的位置。
 - **GEN-3**：排不下時丟 SceneError，訊息開頭是出錯的元素與欄位；斜坡種類的元素有一格四周（北東南西）沒有 `Height` 剛好高一階的格時也丟 SceneError，訊息開頭是那個元素的 `.kind`（D-012）；entity 或傳送點擺在帶零件區域的中心（零件的格）時也丟 SceneError，訊息開頭是擺過去的那一個的 `.at`、`.from` 或 `.to`（D-013）；丟錯時還沒寫任何檔。
 - **GEN-4**：改一個區域的一個欄位（位置、大小、靠近的一邊、間隔），其他元素只有在指向已移動的元素、或新舊兩次排列中被已移動的元素擋過時才會移動。
 - **GEN-5**：生成操作寫完之後，生成紀錄記下的內容等於磁碟上場景地圖的內容；規則與場景地圖都沒變時再生成一次，磁碟上的檔完全不變。
@@ -18,8 +18,8 @@
 
 ## RULE：規則檔
 
-- **RULE-1**：合法的規則檔讀進來不報錯；每個欄位的值與同一種元素、level、entity 類型、地面種類、實心種類、圖格種類的順序、以及 `[[entity]]` 的 `fields`（欄位名稱與值）都照檔案保留（圖格種類的 `ground`、`collision`、`height`、`slope`、`part`、`yaw` 都是選填，沒寫的取預設值：沒有、沒有、0、假、沒有、0；`yaw` 整數也收，存成小數）；只有一個 level 時，`[level]` 與 `[[level]]` 兩種寫法讀出來一樣。
-- **RULE-2**：規則檔有一處不合法（未知或缺少的欄位、型別不對、尺寸小於 1、固定的位置或大小超出 level、元素名稱重複、指向不存在的元素、種類、錨點或 level、指向別的 level 的東西（傳送點除外）、有好幾個 level 卻沒寫元素在哪個 level、路徑起點等於終點、元素或 level 互相指向成環、level 名稱只差大小寫、`[[portal]]` 寫了 `type`、`[[entity]]` 的 `fields` 欄位不存在或值的型別不對（Int、Float、Bool、String；Float 也收整數）、`fields` 裡寫 EntityRef 欄位、`[[entity]]` 的類型是 `Teleport`（要成對，用 `[[portal]]`）、`Part` 沒寫零件名稱或 `part` 是空白、傳送點兩端是同一個錨點或同一個區域的同一格、用 at 固定位置的 level 互相重疊、`[grounds]` 或 `[collisions]` 的值小於 1 或同一節內重複、顏色不是 #RRGGBB、圖格種類一層都沒寫進也沒帶零件（四個欄位和 `part` 都沒寫，或只寫了 `height = 0`、`slope = false`）、`part` 不是字串或是空白、`yaw` 不是有限的數字（含布林）、只寫 `yaw` 沒寫 `part`、路徑用了帶零件的種類、entity 或傳送點的錨點指到帶零件區域的 `.center`（零件的格）（D-013）、`ground` 或 `collision` 不是宣告過的名稱、`height` 不是 0 到 64 的整數、`slope` 不是布林、圖格種類出現舊寫法的 `value` 或 `color`、entity 類型跟 `PlayerSpawn`、`Teleport`、`Part` 同名），讀取丟 SceneError，訊息開頭寫出出錯的元素與欄位，例如 `house_2.size`、`oak_1.fields.yaw`。
+- **RULE-1**：合法的規則檔讀進來不報錯；每個欄位的值與同一種元素、level、entity 類型、地面種類、實心種類、圖格種類的順序、以及 entity 類型的 `tags`（沒寫是空的）、`[[entity]]` 的 `fields`（欄位名稱與值）都照檔案保留（圖格種類的 `ground`、`collision`、`height`、`slope`、`part`、`yaw` 都是選填，沒寫的取預設值：沒有、沒有、0、假、沒有、0；`yaw` 整數也收，存成小數）；只有一個 level 時，`[level]` 與 `[[level]]` 兩種寫法讀出來一樣。
+- **RULE-2**：規則檔有一處不合法（未知或缺少的欄位、型別不對、尺寸小於 1、固定的位置或大小超出 level、元素名稱重複、指向不存在的元素、種類、錨點或 level、指向別的 level 的東西（傳送點除外）、有好幾個 level 卻沒寫元素在哪個 level、路徑起點等於終點、元素或 level 互相指向成環、level 名稱只差大小寫、`[[portal]]` 寫了 `type`、entity 類型的 `tags` 不是字串陣列、是空字串或只有空白的字串、或重複、`[[entity]]` 的 `fields` 欄位不存在或值的型別不對（Int、Float、Bool、String；Float 也收整數）、`fields` 裡寫 EntityRef 欄位、`[[entity]]` 的類型是 `Teleport`（要成對，用 `[[portal]]`）、`Part` 沒寫零件名稱或 `part` 是空白、傳送點兩端是同一個錨點或同一個區域的同一格、用 at 固定位置的 level 互相重疊、`[grounds]` 或 `[collisions]` 的值小於 1 或同一節內重複、顏色不是 #RRGGBB、圖格種類一層都沒寫進也沒帶零件（四個欄位和 `part` 都沒寫，或只寫了 `height = 0`、`slope = false`）、`part` 不是字串或是空白、`yaw` 不是有限的數字（含布林）、只寫 `yaw` 沒寫 `part`、路徑用了帶零件的種類、entity 或傳送點的錨點指到帶零件區域的 `.center`（零件的格）（D-013）、`ground` 或 `collision` 不是宣告過的名稱、`height` 不是 0 到 64 的整數、`slope` 不是布林、圖格種類出現舊寫法的 `value` 或 `color`、entity 類型跟 `PlayerSpawn`、`Teleport`、`Part` 同名），讀取丟 SceneError，訊息開頭寫出出錯的元素與欄位，例如 `house_2.size`、`oak_1.fields.yaw`。
 
 ## FILE：讀寫檔
 
@@ -39,7 +39,7 @@
 - **SCENE-5**：每個會改動場景地圖的操作完成後，磁碟上的場景地圖重新讀進來就是操作後的狀態，那個 level 的預覽圖與世界總覽等於重新 render 的結果；操作失敗時，磁碟上的檔不變。
 - **SCENE-6**：擺放、設定欄位、移動、刪除 entity，以及生成時 `[[entity]]` 帶的欄位值，寫出再讀回之後，每個 entity 的欄位實例跟它的定義一一對應（順序、名稱、型別）；`__value` 是設定的值，沒設的是預設值；EntityRef 的 `__value` 指向的圖層與 level 就是目標實際所在的位置，可以跨 level。
 - **SCENE-7**：刪掉一個 entity 之後，沒有 EntityRef 指向它；欄位不存在、型別不對、不能是空的卻給空值、EntityRef 指向不存在的 entity，都會被拒絕，場景地圖不變。
-- **SCENE-8**：新建的場景地圖與生成的場景地圖，圖層定義由上到下是 `Entities`、`Collision`、`Slope`、`Height`、`Ground`（D-011），entity 定義有 `PlayerSpawn`（tags `player`）、`Teleport`（`targetPort`，EntityRef）、`Part`（`part` 字串、`yaw` 浮點）；每個 level（含新增的）都有這五層的實例；規則宣告的 entity 類型不帶 tags。
+- **SCENE-8**：新建的場景地圖與生成的場景地圖，圖層定義由上到下是 `Entities`、`Collision`、`Slope`、`Height`、`Ground`（D-011），entity 定義有 `PlayerSpawn`（tags `player`）、`Teleport`（`targetPort`，EntityRef）、`Part`（`part` 字串、`yaw` 浮點）；每個 level（含新增的）都有這五層的實例；規則宣告的 entity 類型的 tags 照宣告（沒寫是空的）。
 
 ## CONV：分層慣例
 

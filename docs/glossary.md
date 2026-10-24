@@ -26,7 +26,7 @@
 | 排列順序 | 配置器排元素的先後：先排固定位置的區域，再排指向的東西都排好了的，路徑優先；只看規則，不看位置 | `placement_order` |
 | 推出的 iid | 由 seed 加名字算出的 iid（uuid5），同規則同 seed 就相同；不是 LDtk 隨機配的 iid | `derived_iid`、`element_iid` |
 | 擠開 | 配置時一個元素的候選位置被別的元素佔了，只好換位置；記下被誰擠開，用來說明改一個元素會牽動誰 | `pushed_by` |
-| entity 類型 | 規則檔 `[entity_types]` 裡宣告的一種 entity：顏色、大小與欄位，生成時變成 LDtk 的 entity 定義；不是元素 | `EntityType` |
+| entity 類型 | 規則檔 `[entity_types]` 裡宣告的一種 entity：顏色、大小、欄位與 tags，生成時變成 LDtk 的 entity 定義；不是元素 | `EntityType` |
 | 傳送點 | 規則檔 `[[portal]]` 元素：兩個錨點各擺一個 `Teleport`，用 `targetPort` 互指，可以跨 level，不寫類型（D-011）；不是 PlayerSpawn | `PortalRule` |
 | 欄位 | entity 上一個有名字、有型別的值（LDtk 的 field），例如傳送點的 `targetPort`；不是規則檔裡元素的欄位 | `FieldDef`、`FieldInstance`、`core/fields.py`；規則檔 `[[entity]]` 帶的欄位值是 `EntityRule.fields` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
