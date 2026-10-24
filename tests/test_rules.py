@@ -57,7 +57,7 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
         key: data[key] for key in ("grounds", "collisions") if key in data
     }
     options = ["top_key", "level_key", "level_size", "bad_seed", "kind_old_format", "kind_empty"]
-    options += ["kind_field", "bool_int", "level_reserved"]
+    options += ["kind_field", "kind_part", "bool_int", "level_reserved"]
     if sections:
         options += ["layer_value", "layer_color", "layer_key"]
     if elements:
@@ -65,7 +65,7 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     if good.paths or any(a.near for a in good.areas):
         options.append("self_ref")
     if good.paths:
-        options += ["path_same_ends", "path_too_wide"]
+        options += ["path_same_ends", "path_too_wide", "path_parted_kind"]
     if len(elements) >= 2:
         options.append("duplicate")
     if any(a.at is not None for a in good.areas):
@@ -129,6 +129,28 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             }
             kinds[name][field] = draw(st.sampled_from(bad[field]))
             return data, f"kinds.{name}.{field}"
+        case "kind_part":
+            # D-013：part 要是不是空白的字串、yaw 要是有限的數字、只寫 yaw 沒寫 part 也不行
+            name = draw(st.sampled_from(sorted(kinds)))
+            field = draw(st.sampled_from(["part", "yaw", "yaw_only"]))
+            bad_parts: list[object] = ["", " ", "	", 1, True, [], {}]
+            bad_yaws: list[object] = [True, "90", [], {}, float("inf"), float("-inf"), float("nan")]
+            if field == "part":
+                kinds[name]["part"] = draw(st.sampled_from(bad_parts))
+            elif field == "yaw":
+                kinds[name]["part"] = "p"
+                kinds[name]["yaw"] = draw(st.sampled_from(bad_yaws))
+            else:
+                kinds[name].pop("part", None)
+                kinds[name]["yaw"] = draw(st.sampled_from([0, 90, 1.5]))
+                field = "yaw"
+            return data, f"kinds.{name}.{field}"
+        case "path_parted_kind":
+            # D-013：路徑用了帶零件的種類；報在第一個用它的路徑
+            path = draw(st.sampled_from(data["path"]))
+            kinds[path["kind"]]["part"] = "p"
+            first = next(p for p in data["path"] if p["kind"] == path["kind"])
+            return data, f"{first['name']}.kind"
         case "layer_value":
             key = draw(st.sampled_from(sorted(sections)))
             sec = sections[key]
@@ -590,6 +612,21 @@ ramp  = { ground = "grass", height = 1, slope = true }
 """
 
 
+def test_example_d013_kind_parts() -> None:
+    """典型與邊界（D-013）：整數的 yaw 存成小數；只有零件、一層都沒寫的種類合法；yaw 沒寫是 0。"""
+    data = tomllib.loads(D011_RULES)
+    data["kinds"] = {
+        "shrine": {"ground": "dirt", "part": "shrine", "yaw": 90},
+        "beacon": {"part": "beacon"},
+    }
+    r = parse_rules(data)
+    assert r.kinds == (
+        Kind("shrine", ground="dirt", part="shrine", yaw=90.0),
+        Kind("beacon", part="beacon"),
+    )
+    assert isinstance(r.kinds[0].yaw, float)
+
+
 def test_example_d011_kinds() -> None:
     """典型（D-011）：圖格種類寫進不同的層，沒寫的欄位是預設值；值與顏色住在 [grounds] 等。"""
     r = parse_rules(tomllib.loads(D011_RULES))
@@ -626,3 +663,19 @@ def test_example_d011_old_format_and_mistakes(kind: dict[str, Any], where: str) 
         parse_rules(data)
     if where.endswith((".value", ".color")):
         assert "[grounds]" in str(error.value) and "[collisions]" in str(error.value)
+
+
+def test_example_anchor_on_area_part_is_refused() -> None:
+    """邊界（D-013）：entity 或傳送點的錨點指到帶零件區域的中心，讀規則檔就擋，報在它自己的欄位。"""
+    data: dict[str, Any] = {
+        "seed": 1,
+        "level": {"name": "L", "size": [9, 9]},
+        "grounds": {"g": {"value": 1, "color": "#000000"}},
+        "kinds": {"house": {"ground": "g", "part": "house"}},
+        "area": [{"name": "home", "kind": "house", "size": [3, 3], "at": "center"}],
+        "entity": [{"name": "spawn", "type": "PlayerSpawn", "at": "home.center"}],
+    }
+    with pytest.raises(SceneError, match=r"^spawn\.at：home\.center 是 home 的零件擺的格"):
+        parse_rules(data)
+    data["entity"][0]["at"] = "home.north"
+    parse_rules(data)

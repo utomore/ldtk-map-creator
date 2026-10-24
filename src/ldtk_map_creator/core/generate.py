@@ -23,6 +23,11 @@ def element_iid(seed: int, name: str) -> str:
     return derived_iid(seed, f"element:{name}")
 
 
+def area_part_iid(seed: int, name: str) -> str:
+    """種類帶零件的區域，中心那個 `Part` 的 iid（D-013）。"""
+    return element_iid(seed, f"{name}:part")
+
+
 def portal_iids(seed: int, name: str) -> tuple[str, str]:
     """傳送點兩端 entity 的 iid（from 那端, to 那端）。"""
     return element_iid(seed, f"{name}:from"), element_iid(seed, f"{name}:to")
@@ -89,6 +94,19 @@ def generate_scene(
         x, y = placed.entities[entity.name]
         iid = element_iid(rules.seed, entity.name)
         _place_rule_entity(scene, placed.level_of[entity.name], entity, (x, y), iid)
+
+    # 種類帶零件的區域：中心那格擺一個 Part（D-013），順序照區域在規則檔的順序（配置器排好的）
+    area_kind = {a.name: a.kind for a in rules.areas}
+    for name, cell in placed.parts.items():
+        part_kind = kinds[area_kind[name]]
+        part_values: dict[str, object] = {
+            convention.PART_NAME: part_kind.part,
+            convention.PART_YAW: part_kind.yaw,
+        }
+        iid = area_part_iid(rules.seed, name)
+        _place(
+            scene, placed.level_of[name], convention.PART, cell, iid, f"{name}.kind", part_values
+        )
 
     # 傳送點：兩端各擺一個 Teleport，用 targetPort 互指（D-010、D-011）
     for portal in rules.portals:

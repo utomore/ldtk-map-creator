@@ -563,3 +563,19 @@ def test_example_stranded_slope_leaves_files_unchanged(tmp_path: Path) -> None:
     assert {k: v for k, v in after.items() if k != rules_file} == {
         k: v for k, v in before.items() if k != rules_file
     }
+
+
+def test_example_kind_part_change_is_listed(tmp_path: Path) -> None:
+    """典型（D-013）：改種類的 part 或 yaw，摘要列出用這個種類的區域；沒改的區域不列。"""
+    path = tmp_path / "village.ldtk"
+    text = EXAMPLE.with_name("village_terrain.rules.toml").read_text(encoding="utf-8")
+    house = 'house = { ground = "dirt", collision = "wall" }'
+    assert house in text
+    parted = text.replace(house, house.replace(" }", ', part = "house" }'))
+    rules_file = record.rules_path(path)
+    for change in ('part = "cottage"', 'part = "house", yaw = 45'):
+        rules_file.write_text(parted, encoding="utf-8")
+        actions.generate_scene(path, force=True)
+        rules_file.write_text(parted.replace('part = "house"', change), encoding="utf-8")
+        result = actions.generate_scene(path)
+        assert "位置或欄位變了：house_1" in result.summary, change

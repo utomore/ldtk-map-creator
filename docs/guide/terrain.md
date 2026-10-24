@@ -48,6 +48,24 @@ size = [3, 1]      # 一格深，三格都貼著小丘的南邊
 at = [6, 18]
 ```
 
+## 擺模型
+
+- 圖格種類可以帶 `part`（零件名稱）和 `yaw`（方向，度，沒寫是 0）；`yaw` 要先有 `part`（D-013）。
+- 用了這個種類的每個區域，生成時在它的中心（`center` 錨點）擺一個 `Part`，`part`、`yaw` 照種類。
+
+```toml
+[kinds]
+house = { ground = "dirt", collision = "wall", part = "house", yaw = 90 }
+```
+
+- 只有區域能用；路徑用了帶零件的種類，讀規則檔就報錯：`<路徑名>.kind`。
+- 種類可以只帶 `part`、不寫進任何一層。
+- 零件的格跟別的 entity（`[[entity]]`、傳送點）撞到，生成報錯：`<區域名>.kind`；要把別的 entity 改擺到別格，或改用 `[[entity]]`。
+- 兩種寫法怎麼選：
+  - 每間都一樣、擺在中心：用種類的 `part`。
+  - 要個別調位置或方向、一塊區域擺好幾個：用 `[[entity]]` 的 `Part`，種類就不要帶 `part`。
+- 預覽圖不另外標零件的名稱，區域本身已有名稱。
+
 ## 確認
 
 - 生成之後跑 `check_scene`（MCP 工具或 `uv run ldtk-map-creator check_scene <場景地圖.ldtk>`），回「照分層慣例，沒有問題」才算數。

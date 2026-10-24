@@ -63,12 +63,15 @@ VILLAGE_KINDS = (
     Kind("hill", ground="grass", height=2),
     Kind("ramp", ground="grass", height=1, slope=True),
     Kind("pond", collision="water"),
+    # 帶零件的種類（D-013）：一個有地面，一個只有零件
+    Kind("shrine", ground="dirt", part="shrine", yaw=90.0),
+    Kind("beacon", part="beacon"),
 )
 # 只有一種圖格種類 k、一種地面 g 的規則（單元測試用）
 SIMPLE_GROUNDS = (LayerValue("g", 1, "#000000"),)
 SIMPLE_KINDS = (Kind("k", ground="g"),)
 # 區域用的種類（路徑一律是 road）
-AREA_KINDS = ["ground", "house", "hill", "ramp", "pond"]
+AREA_KINDS = ["ground", "house", "hill", "ramp", "pond", "shrine", "beacon"]
 
 
 # 固定位置 level 的格位：彼此隔 25 格，level 最大 20 格，避開第一個 level 預設的 (0, 0)
@@ -101,6 +104,12 @@ def field_values(
         return ()
     picked = draw(st.lists(st.sampled_from(usable), unique_by=lambda f: f[0], max_size=len(usable)))
     return tuple((name, draw(scalar_value(kind))) for name, kind in picked)
+
+
+def area_anchors(area: AreaRule, kinds: tuple[Kind, ...]) -> list[str]:
+    """區域可以讓 entity、傳送點指的錨點：帶零件的區域，中心是零件的格（D-013），不給別人用。"""
+    parted = any(k.name == area.kind and k.part is not None for k in kinds)
+    return [f"{area.name}.{a}" for a in AREA_ANCHORS if not (parted and a == "center")]
 
 
 @st.composite
@@ -137,11 +146,15 @@ def rules(
             draw(st.none() | st.sampled_from([v.name for v in collisions])) if collisions else None,
             draw(st.integers(0, 4)),
             draw(st.booleans()),
+            *draw(kind_parts()),
         )
         for n in kind_names
     )
-    # 每個種類至少寫一層（RULE-2）：什麼都沒寫的補上高度 1
+    # 路徑不能用帶零件的種類（D-013）：第一個種類不帶零件，路徑只用不帶零件的
+    kinds = (replace(kinds[0], part=None, yaw=0.0), *kinds[1:])
+    # 每個種類至少寫進一層或帶零件（RULE-2）：什麼都沒寫的補上高度 1
     kinds = tuple(k if _writes(k) else replace(k, height=1) for k in kinds)
+    path_kind = st.sampled_from([k.name for k in kinds if k.part is None])
     element_names = draw(st.lists(names, min_size=min_elements, max_size=max_elements, unique=True))
 
     areas: list[AreaRule] = []
@@ -173,14 +186,14 @@ def rules(
                 area = AreaRule(name, draw(kind), (w, h), at=at)
             areas.append(area)
             targets.append(name)
-            anchors += [f"{name}.{a}" for a in AREA_ANCHORS]
+            anchors += area_anchors(area, kinds)
         elif choice == "path":
             edge = st.sampled_from([f"edge:{s}" for s in SIDES])
             start = draw(st.sampled_from(targets))
             others = [t for t in targets if t != start]
             to = draw(edge | st.sampled_from(others) if others else edge)
             path_width = draw(st.integers(1, width_limit(to, (width, height))))
-            paths.append(PathRule(name, draw(kind), start, to, path_width))
+            paths.append(PathRule(name, draw(path_kind), start, to, path_width))
             targets.append(name)
             anchors += [f"{name}.{a}" for a in PATH_ANCHORS]
         else:
@@ -266,7 +279,23 @@ def qualified_slopes(r: Rules) -> Rules:
 
 def _writes(kind: Kind) -> bool:
     """圖格種類有沒有寫進任何一層（寫成規則檔時至少要有一個欄位）。"""
-    return kind.ground is not None or kind.collision is not None or kind.height > 0 or kind.slope
+    return (
+        kind.ground is not None
+        or kind.collision is not None
+        or kind.height > 0
+        or kind.slope
+        or kind.part is not None
+    )
+
+
+@st.composite
+def kind_parts(draw: st.DrawFn) -> tuple[str | None, float]:
+    """圖格種類的（part, yaw）：沒帶零件時 yaw 一定是 0；帶零件時 yaw 常常是 0（沒寫）。"""
+    if not draw(st.booleans()):
+        return None, 0.0
+    part = draw(st.text("abcXYZ019_", min_size=1, max_size=8))
+    yaw = draw(st.just(0.0) | st.floats(-1e6, 1e6, allow_nan=False))
+    return part, yaw
 
 
 @st.composite
@@ -290,6 +319,10 @@ def kind_data(k: Kind) -> dict[str, Any]:
         item["height"] = k.height
     if k.slope:
         item["slope"] = True
+    if k.part is not None:
+        item["part"] = k.part
+        if k.yaw != 0.0:
+            item["yaw"] = k.yaw
     return item
 
 
@@ -421,7 +454,7 @@ def _raw_village_rules(draw: st.DrawFn) -> Rules:
             else:
                 entities.append(EntityRule(name, "PlayerSpawn", at))
             continue
-        if choice != "path":
+        if choice != "path" and f"{name}.center" in area_anchors(areas[-1], VILLAGE_KINDS):
             anchors.append(f"{name}.center")
         targets.append(name)
     seed = draw(st.integers(0, 2**32))
@@ -550,6 +583,7 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             levels.append(LevelRule(name, size, near=near, side=side, gap=draw(st.integers(0, 5))))
     kinds = VILLAGE_KINDS
     kind = st.sampled_from(AREA_KINDS)
+    path_kind = st.sampled_from([k.name for k in VILLAGE_KINDS if k.part is None])
     element_names = draw(st.lists(names, max_size=12, unique=True))
     areas: list[AreaRule] = []
     paths: list[PathRule] = []
@@ -579,11 +613,11 @@ def multi_rules(draw: st.DrawFn) -> Rules:
                 area = AreaRule(name, draw(kind), (w, h), at=at, level=written)
             areas.append(area)
             here.append(name)
-            anchors[lv.name] += [f"{name}.{a}" for a in AREA_ANCHORS]
+            anchors[lv.name] += area_anchors(area, VILLAGE_KINDS)
         elif choice == "path":
             start = draw(st.sampled_from(here))
             to = f"edge:{draw(st.sampled_from(SIDES))}"
-            paths.append(PathRule(name, draw(kind), start, to, 1, level=written))
+            paths.append(PathRule(name, draw(path_kind), start, to, 1, level=written))
             here.append(name)
             anchors[lv.name] += [f"{name}.{a}" for a in PATH_ANCHORS]
         elif choice == "entity":
@@ -719,7 +753,7 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     # 傳送點（D-010）：兩個錨點，跨 level 或同一個 level 都有，區域與路徑的錨點都用
     areas = tuple(a for part in moved for a in part.areas)
     paths = tuple(p for part in moved for p in part.paths)
-    anchors = [f"{a.name}.{s}" for a in areas for s in AREA_ANCHORS]
+    anchors = [anchor for a in areas for anchor in area_anchors(a, parts[0].kinds)]
     anchors += [f"{p.name}.{s}" for p in paths for s in PATH_ANCHORS]
     portals: list[PortalRule] = []
     if len(anchors) >= 2:

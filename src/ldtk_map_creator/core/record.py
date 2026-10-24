@@ -136,11 +136,13 @@ def make_record(
     """生成之後要寫進紀錄的資料：場景地圖的內容、每個元素與 level 的位置（用來說誰移動了），
     以及每個 level 的預覽圖要寫的元素名稱。`shapes` 是 entity 的類型與欄位值
     （元素名稱 → 類型加上有寫的欄位），只換類型或欄位值時也算變了；沒有欄位值的不多記一項。
+    帶零件的區域也有一項：零件名稱與方向（D-013）。
     """
     shapes = shapes or {}
     elements: dict[str, str] = {}
     for name, cells in placed.cells.items():
-        elements[name] = _digest([placed.level_of[name], sorted(cells)])
+        # 區域帶零件時，零件名稱與方向也算（D-013）；沒帶的跟以前的寫法一樣
+        elements[name] = _digest([placed.level_of[name], sorted(cells), *shapes.get(name, [])])
     for name, cell in placed.entities.items():
         elements[name] = _digest([placed.level_of[name], [cell], *shapes.get(name, [None])])
     portals = {
