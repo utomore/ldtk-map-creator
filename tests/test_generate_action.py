@@ -796,3 +796,23 @@ def test_example_old_style_rules_keep_their_record_digests() -> None:
             saved = record.read_record(path)
             assert saved is not None
             assert (saved["elements"], saved["portals"]) == (elements, portals), name
+
+
+def test_example_split_change_does_not_reuse_foreign_level_files(tmp_path: Path) -> None:
+    """曾經沒保護的地方：單檔改拆開存時，子資料夾裡原有的同名 .ldtkl 要被這次生成的內容蓋掉。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text, encoding="utf-8")
+    actions.generate_scene(path)
+    other = tmp_path / "other.ldtk"  # 別的 seed 生成的同名 level 檔，手動放進子資料夾
+    elsewhere = text.replace("seed = 49", "seed = 7").replace("split = false", "split = true")
+    record.rules_path(other).write_text(elsewhere, encoding="utf-8")
+    actions.generate_scene(other)
+    (tmp_path / "placement").mkdir()
+    shutil.copy(tmp_path / "other" / "Home.ldtkl", tmp_path / "placement" / "Home.ldtkl")
+    rules_file.write_text(text.replace("split = false", "split = true"), encoding="utf-8")
+    actions.generate_scene(path)
+    saved = record.read_record(path)
+    assert saved is not None and saved["content"] == record.content(load_scene(path))
+    actions.generate_scene(path)  # 沒有被擋成「被直接改過」

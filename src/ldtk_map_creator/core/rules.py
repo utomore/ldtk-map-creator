@@ -778,7 +778,7 @@ def check_entity_rect(rules: Rules, entity: EntityRule, cell: Cell) -> None:
     # 讀規則檔時已經擋過；直接組出來的規則也不能悄悄生成出錯的位置
     if any(not 0 <= o < rules.grid for o in entity.offset):
         raise SceneError(
-            f"{entity.name}.offset：要小於格子大小 {rules.grid}：{list(entity.offset)}"
+            f"{entity.name}.offset：兩個數字都要在 0 到 {rules.grid - 1}：{list(entity.offset)}"
         )
     if entity.size is not None and min(entity.size) < 1:
         raise SceneError(f"{entity.name}.size：至少是 1：{list(entity.size)}")
@@ -1022,7 +1022,7 @@ def _offset(value: object, where: str, grid: int) -> Cell:
     """格內的像素位移：兩個整數，各自在 0 到 grid - 1（位移不能把 entity 推出它那一格）。"""
     x, y = _pair(value, where, "[x, y]", minimum=0)
     if x >= grid or y >= grid:
-        raise SceneError(f"{where}：要小於格子大小 {grid}：{[x, y]}")
+        raise SceneError(f"{where}：兩個數字都要在 0 到 {grid - 1}：{[x, y]}")
     return x, y
 
 

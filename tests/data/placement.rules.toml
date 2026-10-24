@@ -26,7 +26,7 @@ plot = { ground = "dirt", collision = "wall" }
 [entity_types]
 Teleport = { color = "#30e1b9", tags = ["tele"] }
 House = { color = "#b33831", size = [384, 288] } # 像素：預設 4×3 格
-Scout = { color = "#f9c22b", size = [8, 8], tags = ["player"] } # 像素：比一格小的類型
+Scout = { color = "#f9c22b", size = [8, 8] } # 像素：比一格小的類型
 
 [[area]]
 name = "home_floor"

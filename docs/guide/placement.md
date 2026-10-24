@@ -44,7 +44,7 @@ at = [4, 3]
 offset = [48, 72]   # (4, 3) 那一格往右 48、往下 72：grid = 96 時 px 是 (432, 360)
 
 [entity_types]
-Scout = { color = "#f9c22b", size = [8, 8], tags = ["player"] }  # 像素：8×8，比一格小
+Scout = { color = "#f9c22b", size = [8, 8] }  # 像素：8×8，比一格小
 ```
 
 ## 整個矩形要在 level 內

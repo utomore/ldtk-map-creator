@@ -188,7 +188,7 @@ def test_example_f2_spawn_sits_inside_its_cell(tmp_path: Path) -> None:
     _, scout = found[element_iid(r.seed, "scout")]
     assert scout["px"] == [6 * 96 + 48, 5 * 96 + 72] and scout["__grid"] == [6, 5]
     assert (scout["width"], scout["height"]) == (8, 8)
-    assert scout["__tags"] == ["player"]
+    assert scout["__tags"] == []
 
 
 def test_example_f3_portal_ends_are_bands(tmp_path: Path) -> None:
@@ -339,8 +339,8 @@ def test_example_fixed_end_collides_with_an_area_part() -> None:
 @pytest.mark.parametrize(
     ("what", "where"),
     [
-        ("offset_negative", r"^spawn\.offset：要小於格子大小 96"),
-        ("offset_too_big", r"^spawn\.offset：要小於格子大小 96"),
+        ("offset_negative", r"^spawn\.offset：兩個數字都要在 0 到 95"),
+        ("offset_too_big", r"^spawn\.offset：兩個數字都要在 0 到 95"),
         ("size_zero", r"^spawn\.size：至少是 1"),
         ("end_size_zero", r"^door\.from\.size：至少是 1"),
         ("end_negative", r"^door\.from\.at：不能是負的"),
@@ -382,20 +382,22 @@ def broken_layout(draw: st.DrawFn) -> tuple[Rules, str]:
     good = draw(placement_rules().filter(lambda r: bool(r.entities)))
     placed = layout(good)
     many = len(good.levels) > 1
+    sizes = {lv.name: lv.size for lv in good.levels}
 
-    def end_at(level: str, cell: tuple[int, int]) -> FixedEnd:
-        return FixedEnd(level if many else None, cell)
+    def covering(level: str, target: tuple[int, int]) -> FixedEnd:
+        """蓋住 target 那一格的端點：矩形最多 2×2，左上角往上、往左退，目標常常不是左上角。"""
+        w, h = min(2, sizes[level][0]), min(2, sizes[level][1])
+        x, y = max(0, target[0] - (w - 1)), max(0, target[1] - (h - 1))
+        return FixedEnd(level if many else None, (x, y), (w, h))
 
-    options = ["rect_out", "end_out", "end_on_entity"]
+    options = ["rect_out", "end_out", "end_level", "end_on_entity"]
     if good.portals:
         options.append("end_on_end")
     match draw(st.sampled_from(options)):
         case "rect_out":
             # 實體往右拉到超出 level：大小比 level 還大報在 size，否則報在 at
             entity = draw(st.sampled_from(good.entities))
-            width = next(
-                lv.size[0] for lv in good.levels if lv.name == placed.level_of[entity.name]
-            )
+            width = sizes[placed.level_of[entity.name]][0]
             size = (width - placed.entities[entity.name][0] + 1, 1)
             bad = dataclasses.replace(entity, size=size, offset=(0, 0))
             entities = tuple(bad if e is entity else e for e in good.entities)
@@ -403,19 +405,26 @@ def broken_layout(draw: st.DrawFn) -> tuple[Rules, str]:
             return dataclasses.replace(good, entities=entities), f"{entity.name}.{field}"
         case "end_out":
             level = draw(st.sampled_from(good.levels))
-            portal = PortalRule("zz_out", end_at(level.name, (level.size[0], 0)), "nowhere")
+            end = FixedEnd(level.name if many else None, (level.size[0], 0))
+            portal = PortalRule("zz_out", end, "nowhere")
             return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_out.from.at"
+        case "end_level":
+            portal = PortalRule("zz_lv", FixedEnd("Zz_nowhere", (0, 0)), "nowhere")
+            return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_lv.from.level"
         case "end_on_entity":
             # 新的傳送點的端點蓋住一個 entity 的左上角那一格：entity 先擺，報在後擺的端點
             entity = draw(st.sampled_from(good.entities))
-            end = end_at(placed.level_of[entity.name], placed.entities[entity.name])
+            end = covering(placed.level_of[entity.name], placed.entities[entity.name])
             portal = PortalRule("zz_hit", end, end)
             return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_hit.from"
         case _:
-            # 新的傳送點的端點蓋住別的端點的左上角那一格：先擺的先佔，報在後擺的端點
+            # 新的傳送點的端點蓋住別的端點矩形裡的某一格（不一定是左上角）：先擺的先佔，報在後擺的
             existing = draw(st.sampled_from(good.portals))
-            level, cell = placed.portals[existing.name][0]
-            end = end_at(level, cell)
+            which = draw(st.integers(0, 1))
+            level, (cx, cy) = placed.portals[existing.name][which]
+            w, h = placed.portal_sizes[existing.name][which]
+            target = (cx + draw(st.integers(0, w - 1)), cy + draw(st.integers(0, h - 1)))
+            end = covering(level, target)
             portal = PortalRule("zz_over", end, end)
             return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_over.from"
 

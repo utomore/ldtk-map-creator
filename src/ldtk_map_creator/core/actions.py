@@ -492,6 +492,9 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
                 )
     if rules.split is not None:  # 規則檔指定存法就照它，不看磁碟上原本怎麼存（D-014）
         split = rules.split
+    if current is not None and current.split != split:
+        # 存法改變：每個 level 都重寫，不沿用子資料夾裡原有的同名檔（那不是這次生成的）
+        before = None
     # 地圖不在時照樣檢查子資料夾裡有沒有別的 level 檔；那些不是生成的，force 也不蓋
     target, placed = generation.generate_scene(rules, path, split=split, overwrite=path.exists())
     areas = {a.name for a in rules.areas}
