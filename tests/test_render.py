@@ -16,6 +16,7 @@ from ldtk_map_creator.core import record
 from ldtk_map_creator.core.edit import add_entity_def, paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import generate_scene
+from ldtk_map_creator.core.model import LayerInstance
 from ldtk_map_creator.core.record import name_positions
 from ldtk_map_creator.core.render import (
     MARGIN,
@@ -27,9 +28,11 @@ from ldtk_map_creator.core.render import (
     world_view,
     write_preview,
 )
-from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
+from ldtk_map_creator.core.rules import AreaRule, EntityRule, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
 from tests.rule_strategies import (
+    SIMPLE_GROUNDS,
+    SIMPLE_KINDS,
     one_level_rules,
     placeable_multi_village_rules,
     placeable_village_rules,
@@ -50,11 +53,18 @@ def _build(
 ) -> SceneMap:
     scene = new_scene(folder / "scene.ldtk")
     add_level(scene, "Room", width_cells=w, height_cells=h, world_x=4096)
-    paint_cells(scene, "Room", cells=[(x, y) for x, y in painted if x < w and y < h], value=1)
+    inside = [(x, y) for x, y in painted if x < w and y < h]
+    paint_cells(scene, "Room", cells=inside, value=1, layer="Collision")
     for x, y in spawns:
         if x < w and y < h:
-            place_entity(scene, "Room", "Spawn", x=x, y=y)
+            place_entity(scene, "Room", "PlayerSpawn", x=x, y=y)
     return scene
+
+
+def _layer(scene: SceneMap, level: str, name: str) -> LayerInstance:
+    return next(
+        ly for ly in scene.level(level)["layerInstances"] or [] if ly["__identifier"] == name
+    )
 
 
 def _png(image: Image.Image) -> bytes:
@@ -88,7 +98,8 @@ def test_render_1_to_3_size_and_colors(
         assert image.size == image_size(level, scale)
         assert image.size == (MARGIN + level["pxWid"] * scale, MARGIN + level["pxHei"] * scale)
         defs = scene.project["defs"]
-        wall = _hex(defs["layers"][0]["intGridValues"][0]["color"])
+        collision = next(d for d in defs["layers"] if d["identifier"] == "Collision")
+        wall = _hex(collision["intGridValues"][0]["color"])
         spawn = _hex(defs["entities"][0]["color"])
         background = _hex(level["__bgColor"])
         cell = 16 * scale
@@ -143,9 +154,9 @@ def test_example_scale_must_be_positive(tmp_path: Path) -> None:
 def test_example_entity_uses_its_own_size_and_layer_offset(tmp_path: Path) -> None:
     """曾經壞過：entity 用自己的尺寸畫；圖層的像素偏移要算進去。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    entity = place_entity(scene, "Level_0", "Spawn", x=2, y=2)
+    entity = place_entity(scene, "Level_0", "PlayerSpawn", x=2, y=2)
     entity["width"] = 48
-    layer = (scene.level("Level_0")["layerInstances"] or [])[1]
+    layer = _layer(scene, "Level_0", "Entities")
     layer["pxOffsetX"] = 8
     image = render_level(scene, "Level_0", scale=1)
     spawn = _hex(scene.project["defs"]["entities"][0]["color"])
@@ -157,8 +168,8 @@ def test_example_entity_uses_its_own_size_and_layer_offset(tmp_path: Path) -> No
 def test_example_hidden_layer_is_not_drawn(tmp_path: Path) -> None:
     """邊界：LDtk 裡隱藏的圖層不畫。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    paint_cells(scene, "Level_0", cells=[(3, 3)], value=1)
-    (scene.level("Level_0")["layerInstances"] or [])[0]["visible"] = False
+    paint_cells(scene, "Level_0", cells=[(3, 3)], value=1, layer="Collision")
+    _layer(scene, "Level_0", "Collision")["visible"] = False
     image = render_level(scene, "Level_0", scale=1)
     background = _hex(scene.level("Level_0")["__bgColor"])
     assert image.getpixel((MARGIN + 3 * 16 + 8, MARGIN + 3 * 16 + 8)) == background
@@ -167,7 +178,7 @@ def test_example_hidden_layer_is_not_drawn(tmp_path: Path) -> None:
 def test_example_undefined_value_is_scene_error(tmp_path: Path) -> None:
     """邊界：csv 裡有定義沒有的值，丟 SceneError 而不是 KeyError。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    (scene.level("Level_0")["layerInstances"] or [])[0]["intGridCsv"][0] = 7
+    _layer(scene, "Level_0", "Collision")["intGridCsv"][0] = 7
     with pytest.raises(SceneError):
         render_level(scene, "Level_0")
 
@@ -175,8 +186,8 @@ def test_example_undefined_value_is_scene_error(tmp_path: Path) -> None:
 def test_example_stacked_entities_keep_their_color(tmp_path: Path) -> None:
     """曾經壞過：上下相鄰的 entity，下面那個的名稱不能蓋住上面那個方塊。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    place_entity(scene, "Level_0", "Spawn", x=2, y=1)
-    place_entity(scene, "Level_0", "Spawn", x=2, y=2)
+    place_entity(scene, "Level_0", "PlayerSpawn", x=2, y=1)
+    place_entity(scene, "Level_0", "PlayerSpawn", x=2, y=2)
     spawn = _hex(scene.project["defs"]["entities"][0]["color"])
     image = render_level(scene, "Level_0", scale=1)
     for cy in (1, 2):
@@ -201,7 +212,7 @@ def test_example_locked_preview_reports_scene_error(
 def test_example_grid_follows_visible_intgrid_offset(tmp_path: Path) -> None:
     """曾經壞過：格線跟著看得見的 IntGrid 的偏移，格子才對得上格線。"""
     scene = new_scene(tmp_path / "village.ldtk")
-    (scene.level("Level_0")["layerInstances"] or [])[0]["pxOffsetX"] = 8
+    _layer(scene, "Level_0", "Collision")["pxOffsetX"] = 8
     image = render_level(scene, "Level_0", scale=1)
     background = _hex(scene.level("Level_0")["__bgColor"])
     row = MARGIN + 8
@@ -213,11 +224,11 @@ def test_example_bad_color_and_zero_size_are_scene_errors(tmp_path: Path) -> Non
     """邊界：顏色不是十六進位、entity 尺寸是 0，都丟 SceneError。"""
     scene = new_scene(tmp_path / "village.ldtk")
     scene.project["defs"]["entities"][0]["color"] = "#GG0000"
-    place_entity(scene, "Level_0", "Spawn", x=0, y=0)
+    place_entity(scene, "Level_0", "PlayerSpawn", x=0, y=0)
     with pytest.raises(SceneError):
         render_level(scene, "Level_0")
     scene.project["defs"]["entities"][0]["color"] = "#BE4A2F"
-    entity = (scene.level("Level_0")["layerInstances"] or [])[1]["entityInstances"][0]
+    entity = _layer(scene, "Level_0", "Entities")["entityInstances"][0]
     entity["width"] = 0
     with pytest.raises(SceneError):
         render_level(scene, "Level_0")
@@ -227,7 +238,7 @@ def test_example_label_in_one_row_level_stays_inside(tmp_path: Path) -> None:
     """邊界：只有一列高的 level，名稱寫進方塊裡，不跑出圖外。"""
     scene = new_scene(tmp_path / "village.ldtk")
     add_level(scene, "Strip", width_cells=6, height_cells=1, world_x=4096)
-    place_entity(scene, "Strip", "Spawn", x=0, y=0)
+    place_entity(scene, "Strip", "PlayerSpawn", x=0, y=0)
     image = render_level(scene, "Strip", scale=2)
     box = image.crop((MARGIN, MARGIN, MARGIN + 32, MARGIN + 32))
     # 不含外框；字有反鋸齒，找比方塊顏色亮很多的像素（方塊的綠色分量是 0x4A）
@@ -301,13 +312,14 @@ def test_example_long_name_at_the_corner_stays_inside() -> None:
         0,
         "L",
         (12, 8),
-        (Kind("k", 1, "#000000"),),
+        SIMPLE_KINDS,
         (
             AreaRule("a_rather_long_name", "k", (1, 1), at=(0, 0)),
             AreaRule("another_long_name", "k", (1, 1), at=(11, 7)),
         ),
         (),
         (),
+        grounds=SIMPLE_GROUNDS,
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
@@ -333,10 +345,11 @@ def test_example_name_does_not_cover_an_entity_on_it() -> None:
         0,
         "L",
         (10, 10),
-        (Kind("k", 1, "#000000"),),
+        SIMPLE_KINDS,
         (AreaRule("plaza", "k", (3, 3), at="center"),),
         (),
-        (EntityRule("spawn", "Spawn", "plaza.center"),),
+        (EntityRule("spawn", "PlayerSpawn", "plaza.center"),),
+        grounds=SIMPLE_GROUNDS,
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
@@ -352,13 +365,14 @@ def test_example_name_wider_than_the_level() -> None:
         0,
         "L",
         (2, 1),
-        (Kind("k", 1, "#000000"),),
+        SIMPLE_KINDS,
         (
             AreaRule("medium", "k", (1, 1), at=(0, 0)),
             AreaRule("a_name_far_too_long_for_two_cells", "k", (1, 1), at=(1, 0)),
         ),
         (),
         (),
+        grounds=SIMPLE_GROUNDS,
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
@@ -378,13 +392,14 @@ def test_example_neighbour_names_do_not_overlap() -> None:
         0,
         "L",
         (6, 3),
-        (Kind("k", 1, "#000000"),),
+        SIMPLE_KINDS,
         (
             AreaRule("north_gate", "k", (1, 1), at=(2, 1)),
             AreaRule("north_road", "k", (1, 1), at=(3, 1)),
         ),
         (),
         (),
+        grounds=SIMPLE_GROUNDS,
     )
     with tempfile.TemporaryDirectory() as tmp:
         scene, placed = generate_scene(r, Path(tmp) / "scene.ldtk")
@@ -399,7 +414,7 @@ def test_example_axis_numbers_stay_on_top(tmp_path: Path) -> None:
     """entity 跑進上方的邊框時，格子座標照樣看得見（座標最後畫）。"""
     scene = _build(tmp_path, 4, 4, [], [])
     plain = render_level(scene, "Room")
-    place_entity(scene, "Room", "Spawn", x=0, y=0)
+    place_entity(scene, "Room", "PlayerSpawn", x=0, y=0)
     layers = scene.level("Room")["layerInstances"] or []
     entity = next(e for ly in layers for e in ly["entityInstances"])
     entity["px"] = [0, -10]  # 方塊往上跑進座標那一條
@@ -460,10 +475,12 @@ def test_render_6_world_overview(r: Rules, arrangement: str) -> None:
             1 for i in range(w) for j in range(h) if image.getpixel((x + i, y + j)) == frame
         )
         assert background < 0.1 * w * h, level["identifier"]  # level 有畫出來，不是空白
-        # IntGrid 有畫出來：level 裡用到的種類，顏色出現在它的範圍裡
-        intgrid = next(ly for ly in level["layerInstances"] or [] if ly["__type"] == "IntGrid")
-        used = {v for v in intgrid["intGridCsv"] if v}
-        colors = {_hex(k.color) for k in r.kinds if k.value in used}
+        # IntGrid 有畫出來：上面三層都沒畫的格，Ground 用到的值，顏色出現在它的範圍裡
+        by_name = {ly["__identifier"]: ly["intGridCsv"] for ly in level["layerInstances"] or []}
+        above = zip(by_name["Collision"], by_name["Slope"], by_name["Height"], strict=True)
+        bare = [i for i, cells in enumerate(above) if not any(cells)]
+        used = {by_name["Ground"][i] for i in bare} - {0}
+        colors = {_hex(v.color) for v in r.grounds if v.value in used}
         seen = {image.getpixel((x + i, y + j)) for i in range(w) for j in range(h)}
         assert not colors or colors & seen, level["identifier"]
         # entity 方塊也畫出來（倍率夠大、方塊比線的端點大的時候才看得到）
@@ -539,3 +556,55 @@ def test_example_small_level_name_stays_inside(tmp_path: Path) -> None:
         image.getpixel((gx, gy)) for gx in range(x + w, huge[0]) for gy in range(y, y + h)
     }
     assert gap <= {(24, 26, 34, 255)}
+
+
+def test_example_translucent_layer_blends_with_the_layer_below(tmp_path: Path) -> None:
+    """曾經壞過：半透明的 Height 層要跟下面的 Ground 混色，不是蓋掉成半透明像素（D-011）。"""
+    scene = new_scene(tmp_path / "village.ldtk")
+    paint_cells(scene, "Level_0", cells=[(2, 2)], value=1, layer="Ground")
+    paint_cells(scene, "Level_0", cells=[(2, 2), (3, 2)], value=1, layer="Height")
+    defs = {d["identifier"]: d for d in scene.project["defs"]["layers"]}
+    ground = _hex(defs["Ground"]["intGridValues"][0]["color"])
+    height = _hex(defs["Height"]["intGridValues"][0]["color"])
+    alpha = defs["Height"]["displayOpacity"]
+    assert 0 < alpha < 1
+    image = render_level(scene, "Level_0", scale=1)
+    background = _hex(scene.level("Level_0")["__bgColor"])
+    row = MARGIN + 2 * 16 + 8
+
+    def mix(top: tuple[int, int, int, int], bottom: tuple[int, int, int, int]) -> tuple[int, ...]:
+        return tuple(
+            round(t * alpha + b * (1 - alpha)) for t, b in zip(top[:3], bottom[:3], strict=True)
+        )
+
+    def near(pixel: object, expected: tuple[int, ...]) -> bool:
+        # 透明度存成 0～255 的整數，混色差 1 以內算對
+        got = cast(tuple[int, ...], pixel)
+        return got[3] == 255 and all(
+            abs(g - e) <= 1 for g, e in zip(got[:3], expected, strict=True)
+        )
+
+    assert near(image.getpixel((MARGIN + 2 * 16 + 8, row)), mix(height, ground))
+    assert near(image.getpixel((MARGIN + 3 * 16 + 8, row)), mix(height, background))
+
+
+def test_example_translucent_layer_blends_once_in_world_overview(tmp_path: Path) -> None:
+    """曾經壞過：總覽縮小時好幾格落在同一個像素，半透明的 Height 層不能疊混好幾次（#48 審查）。"""
+    scene = new_scene(tmp_path / "wide.ldtk")
+    # 2000 格寬：總覽縮到一格不到一個像素，好幾格疊在同一個像素上
+    add_level(scene, "Wide", width_cells=2000, height_cells=40)
+    cells = [(x, y) for x in range(2000) for y in range(40)]
+    paint_cells(scene, "Wide", cells=cells, value=1, layer="Ground")
+    paint_cells(scene, "Wide", cells=cells, value=1, layer="Height")
+    view = world_view(scene)
+    assert view.scale < 1 / 16
+    defs = {d["identifier"]: d for d in scene.project["defs"]["layers"]}
+    ground = _hex(defs["Ground"]["intGridValues"][0]["color"])
+    height = _hex(defs["Height"]["intGridValues"][0]["color"])
+    alpha = defs["Height"]["displayOpacity"]
+    expected = [
+        round(t * alpha + b * (1 - alpha)) for t, b in zip(height[:3], ground[:3], strict=True)
+    ]
+    x, y, w, h = view.rects["Wide"]
+    got = cast(tuple[int, ...], render_world(scene).getpixel((x + w // 2, y + h - 2)))
+    assert all(abs(g - e) <= 1 for g, e in zip(got[:3], expected, strict=True))

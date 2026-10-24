@@ -93,7 +93,8 @@ def render_level(
     level = scene.level(level_id)
     layer_defs = {d["uid"]: d for d in project["defs"]["layers"]}
     entity_defs = {d["uid"]: d for d in project["defs"]["entities"]}
-    image = Image.new("RGBA", image_size(level, scale), _FRAME)
+    # RGB 底圖：半透明的圖層才會跟下面的顏色混合；存檔前再轉成 RGBA
+    image = Image.new("RGB", image_size(level, scale), _FRAME[:3])
     draw = ImageDraw.Draw(image, "RGBA")
     background = level_bg_color(project, level)
     right = MARGIN + level["pxWid"] * scale - 1
@@ -137,7 +138,7 @@ def render_level(
             draw.text(xy, name, fill=_LABEL, font=font, anchor=anchor)
     # 格子座標最後畫，entity 跑進邊框也蓋不到
     _draw_grid(draw, level, origin, scale, lines=False)
-    return image
+    return image.convert("RGBA")
 
 
 NameBox = tuple[str, int, tuple[int, int], tuple[int, int, int, int]]
@@ -447,11 +448,11 @@ def render_world(scene: SceneMap) -> Image.Image:
     levels = scene.project["levels"]
     width = max(x + w for x, _, w, _ in view.rects.values()) + MARGIN
     height = max(y + h for _, y, _, h in view.rects.values()) + MARGIN
-    image = Image.new("RGBA", (width, height), _FRAME)
+    image = Image.new("RGB", (width, height), _FRAME[:3])
     draw = ImageDraw.Draw(image, "RGBA")
     for level in levels:
         # 直接用總覽的倍率畫，不先照原尺寸 render 再縮小：很大的世界也只用到總覽那麼多記憶體
-        _draw_level_small(draw, scene, level, view)
+        _draw_level_small(image, draw, scene, level, view)
         x, y, w, h = view.rects[level["identifier"]]
         draw.rectangle((x, y, x + w - 1, y + h - 1), outline=_LABEL)
     for start, end in world_links(scene):
@@ -475,11 +476,11 @@ def render_world(scene: SceneMap) -> Image.Image:
                     stroke_fill=_WORLD_STROKE,
                 )
                 break
-    return image
+    return image.convert("RGBA")
 
 
 def _draw_level_small(
-    draw: ImageDraw.ImageDraw, scene: SceneMap, level: Level, view: WorldView
+    image: Image.Image, draw: ImageDraw.ImageDraw, scene: SceneMap, level: Level, view: WorldView
 ) -> None:
     """總覽裡的一個 level：背景色、看得見的 IntGrid（最下層先畫）、entity 方塊；不畫格線。"""
     project = scene.project
@@ -503,17 +504,25 @@ def _draw_level_small(
             continue
         grid = ldef["gridSize"]
         cols = cell_count(level["pxWid"], grid)
-        colors = {
-            v["value"]: _rgb(v["color"], ldef["displayOpacity"]) for v in ldef["intGridValues"]
-        }
+        colors = {v["value"]: _rgb(v["color"]) for v in ldef["intGridValues"]}
         ox = layer["pxOffsetX"] + ldef["pxOffsetX"]
         oy = layer["pxOffsetY"] + ldef["pxOffsetY"]
+        # 縮小時好幾格落在同一個像素：整層先不透明地畫在一張透明圖上，再照圖層透明度只混一次
+        # 暫存圖只跟這個 level 在總覽裡一樣大
+        sheet = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        sheet_draw = ImageDraw.Draw(sheet)
         for index, value in enumerate(layer["intGridCsv"]):
             color = colors.get(value)
             if value == 0 or color is None:
                 continue
             cx, cy = index % cols, index // cols
-            draw.rectangle(box(ox + cx * grid, oy + cy * grid, grid, grid), fill=color)
+            left, top, right, bottom = box(ox + cx * grid, oy + cy * grid, grid, grid)
+            sheet_draw.rectangle((left - x, top - y, right - x, bottom - y), fill=color)
+        opacity = min(1.0, max(0.0, ldef["displayOpacity"]))  # 跟 _rgb 一樣限制在 0～1
+        table = [round(a * opacity) for a in range(256)]
+        # Pillow 的 stub 在 point 的一個 overload 帶 Unknown，只在這一行放寬
+        mask = sheet.getchannel("A").point(table)  # pyright: ignore[reportUnknownMemberType]
+        image.paste(sheet, (x, y), mask)
     for layer in reversed(visible):
         ldef = layer_defs.get(layer["layerDefUid"])
         ox = layer["pxOffsetX"] + (ldef["pxOffsetX"] if ldef else 0)

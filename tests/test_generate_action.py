@@ -107,10 +107,12 @@ def test_gen_6_direct_edit_blocks_regeneration_until_forced(
             for e in ly["entityInstances"]
         ]
         if kind == "paint":
-            current = read_cell(load_scene(path), r.level_name, x=x, y=y)
-            actions.paint_cells(path, r.level_name, cells=[(x, y)], value=(current + 1) % 4)
+            current = read_cell(load_scene(path), r.level_name, x=x, y=y, layer="Slope")
+            actions.paint_cells(
+                path, r.level_name, cells=[(x, y)], value=(current + 1) % 2, layer="Slope"
+            )
         elif kind == "place":
-            actions.place_entity(path, r.level_name, "Spawn", x=x, y=y)
+            actions.place_entity(path, r.level_name, "PlayerSpawn", x=x, y=y)
         elif kind in ("move", "delete"):
             assume(iids)
             iid = iids[a % len(iids)]
@@ -283,7 +285,7 @@ def test_example_other_previews_are_kept(tmp_path: Path) -> None:
     path = _generated(tmp_path)
     world = tmp_path / "previews" / "village" / "world.png"
     world.write_bytes(b"png")
-    actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    actions.paint_cells(path, "Village", cells=[(0, 0)], value=1, layer="Slope")
     actions.generate_scene(path, force=True)
     assert world.is_file()
 
@@ -376,7 +378,7 @@ def test_example_names_only_when_map_matches_record(tmp_path: Path) -> None:
     """直接改過的地圖不寫元素名稱（名稱可能已經不在元素上），並在摘要說明；改回規則就回來。"""
     path = _generated(tmp_path)
     preview = tmp_path / "previews" / "village" / "Village.png"
-    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1, layer="Slope")
     assert "不寫元素名稱" in result.summary
     scene = load_scene(path)
     with Image.open(preview) as image:
@@ -394,7 +396,7 @@ def test_example_no_record_no_names(tmp_path: Path) -> None:
     path = tmp_path / "village.ldtk"
     actions.create_scene(path)
     shutil.copy(EXAMPLE, record.rules_path(path))
-    result = actions.paint_cells(path, "Level_0", cells=[(0, 0)], value=1)
+    result = actions.paint_cells(path, "Level_0", cells=[(0, 0)], value=1, layer="Slope")
     with Image.open(result.previews[0]) as image:
         assert image.tobytes() == render_level(load_scene(path), "Level_0").tobytes()
     assert "元素名稱" not in result.summary
@@ -430,7 +432,7 @@ def test_example_old_record_version_is_still_read(tmp_path: Path) -> None:
     result = actions.generate_scene(path)
     assert "舊格式" in result.summary
     record.record_path(path).write_bytes(record.dump(old))
-    actions.paint_cells(path, "Village", cells=[(0, 0)], value=2)
+    actions.paint_cells(path, "Village", cells=[(0, 0)], value=1, layer="Slope")
     with pytest.raises(SceneError, match="被直接改過"):
         actions.generate_scene(path)
 
@@ -504,7 +506,7 @@ def test_example_overview_returned_only_when_world_changes(tmp_path: Path) -> No
     path = tmp_path / "scene.ldtk"
     actions.create_scene(path)
     actions.add_level(path, "Inn", width_cells=4, height_cells=4, world_x=1024)
-    painted = actions.paint_cells(path, "Inn", cells=[(0, 0)], value=1)
+    painted = actions.paint_cells(path, "Inn", cells=[(0, 0)], value=1, layer="Slope")
     assert all(p.stem != "world-overview" for p in painted.previews)
     with Image.open(world_preview_path(load_scene(path))) as image:
         assert image.tobytes() == render_world(load_scene(path)).tobytes()
@@ -533,6 +535,6 @@ def test_example_broken_overview_is_removed(
         raise SceneError("故意壞掉")
 
     monkeypatch.setattr(rendering, "render_world", broken)
-    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1, layer="Slope")
     assert "世界總覽畫不出來" in result.summary
     assert not overview.exists()

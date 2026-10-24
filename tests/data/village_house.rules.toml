@@ -12,10 +12,17 @@ near = "Village"
 side = "east"
 gap = 2
 
+[grounds]
+dirt = { value = 1, color = "#C8B27A" }
+planks = { value = 2, color = "#B0A090" }
+
+[collisions]
+wall = { value = 1, color = "#8A4B2F" }
+
 [kinds]
-plaza = { value = 1, color = "#C8B27A" }
-house = { value = 2, color = "#8A4B2F" }
-floor = { value = 3, color = "#B0A090" }
+plaza = { ground = "dirt" }
+house = { ground = "dirt", collision = "wall" }
+floor = { ground = "planks" }
 
 [entity_types]
 Portal = { color = "#4FC3F7", size = [16, 16], fields = { target = "EntityRef" } }

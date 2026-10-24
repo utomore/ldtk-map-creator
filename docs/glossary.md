@@ -13,8 +13,8 @@
 | 元素 | 規則檔裡一個有名字的項目，對應地圖上的一塊東西：區域、路徑或 entity；不是 LDtk 的 entity 定義 | `AreaRule`、`PathRule`、`EntityRule` |
 | 錨點 | 元素上可以讓別的元素指向的位置，例如 `main_road.end`；不是 entity 的 pivot | `AREA_ANCHORS`、`PATH_ANCHORS` |
 | 圖格種類 | 規則檔 `[kinds]` 裡一個有名字的項目，寫明元素畫進分層慣例的哪幾層、各是什麼值（D-011）；不是工作的種類 | `Kind` |
-| 地面種類 | 規則檔 `[grounds]` 裡一個有名字的 `Ground` 層的值與預覽顏色，遊戲對到材質；不是圖格種類 | - |
-| 實心種類 | 規則檔 `[collisions]` 裡一個有名字的 `Collision` 層的值與預覽顏色，例如牆、水；不是圖格種類 | - |
+| 地面種類 | 規則檔 `[grounds]` 裡一個有名字的 `Ground` 層的值與預覽顏色，遊戲對到材質；不是圖格種類 | `LayerValue`（`Rules.grounds`） |
+| 實心種類 | 規則檔 `[collisions]` 裡一個有名字的 `Collision` 層的值與預覽顏色，例如牆、水；不是圖格種類 | `LayerValue`（`Rules.collisions`） |
 | 方位 | 規則檔裡的東南西北：`side` 指區域在誰的哪一邊，`edge:<方位>` 指 level 的哪一邊；不是 LDtk 的 `__neighbours` 方向 | `Side`、`SIDES` |
 | 格 | level 上一格 IntGrid 的位置或大小，以格為單位、原點在左上角；不是像素 | `Cell` |
 | 生成 | 照規則檔建出一個場景地圖：先配置，再畫進 level；不是 LDtk 的 auto-layer | `generate_scene` |
@@ -25,10 +25,10 @@
 | 推出的 iid | 由 seed 加名字算出的 iid（uuid5），同規則同 seed 就相同；不是 LDtk 隨機配的 iid | `derived_iid`、`element_iid` |
 | 擠開 | 配置時一個元素的候選位置被別的元素佔了，只好換位置；記下被誰擠開，用來說明改一個元素會牽動誰 | `pushed_by` |
 | entity 類型 | 規則檔 `[entity_types]` 裡宣告的一種 entity：顏色、大小與欄位，生成時變成 LDtk 的 entity 定義；不是元素 | `EntityType` |
-| 傳送點 | 規則檔 `[[portal]]` 元素：兩個錨點各擺一個 entity，用 EntityRef 欄位互指，可以跨 level；不是 Spawn | `PortalRule` |
+| 傳送點 | 規則檔 `[[portal]]` 元素：兩個錨點各擺一個 entity，用 EntityRef 欄位互指，可以跨 level；不是 PlayerSpawn | `PortalRule` |
 | 欄位 | entity 上一個有名字、有型別的值（LDtk 的 field），例如傳送點的 `target`；不是規則檔裡元素的欄位 | `FieldDef`、`FieldInstance`、`core/fields.py` |
 | 微調 | 生成之後透過對話修改場景地圖；從規則生成的場景地圖，改的是規則檔再重新生成（D-008）。不是在 LDtk 裡手動改 | - |
-| 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接（D-011）；是下限，其他 LDtk 功能照用；不是某款遊戲專用的層名 | - |
+| 分層慣例 | 固定的 IntGrid 層與 Entity 定義的命名和意義，讓引擎照著就能串接（D-011）；是下限，其他 LDtk 功能照用；不是某款遊戲專用的層名 | `core/convention.py` |
 | level | 場景地圖裡的一張地圖，例如村莊外圍的一塊或一間房子的內部；沿用 LDtk 的用詞 | `Level`；規則檔裡的是 `LevelRule` |
 | 操作 | 入口直接呼叫的單位：讀場景地圖、做一件事、寫回、更新預覽圖；一個操作對應一個 MCP 工具與一個 CLI 指令。不是 core 裡單純改記憶體的函式 | `core/actions.py` |
 | 預覽圖 | 一個 level render 成的 PNG，存在 `previews/<主檔名>/<level>.png`；不是 LDtk 自己匯出的圖 | `render_level`、`write_preview` |

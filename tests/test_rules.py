@@ -15,6 +15,8 @@ from ldtk_map_creator.core.rules import (
     AreaRule,
     EntityRule,
     EntityType,
+    Kind,
+    LayerValue,
     LevelRule,
     PathRule,
     PortalRule,
@@ -52,8 +54,13 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     data = copy.deepcopy(to_toml_data(good))
     elements = _elements(data)
     kinds: dict[str, dict[str, Any]] = data["kinds"]
-    options = ["top_key", "level_key", "level_size", "bad_seed", "kind_value", "kind_color"]
-    options += ["bool_int", "level_reserved"]
+    sections: dict[str, dict[str, dict[str, Any]]] = {
+        key: data[key] for key in ("grounds", "collisions") if key in data
+    }
+    options = ["top_key", "level_key", "level_size", "bad_seed", "kind_old_format", "kind_empty"]
+    options += ["kind_field", "bool_int", "level_reserved"]
+    if sections:
+        options += ["layer_value", "layer_color", "layer_key"]
     if elements:
         options += ["element_key", "bad_type", "missing_kind_or_ref"]
     if good.paths or any(a.near for a in good.areas):
@@ -87,7 +94,12 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
                 (data, "seed", "seed"),
                 (data["level"]["size"], 0, "level.size"),
             ]
-            slots += [(k, "value", f"kinds.{n}.value") for n, k in kinds.items()]
+            slots += [
+                (v, "value", f"{key}.{n}.value")
+                for key, sec in sections.items()
+                for n, v in sec.items()
+            ]
+            slots += [(k, "height", f"kinds.{n}.height") for n, k in kinds.items() if "height" in k]
             for _, _, e in elements:
                 for field in ("size", "at"):
                     if isinstance(e.get(field), list):
@@ -96,21 +108,53 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             box, key, where = draw(st.sampled_from(slots))
             box[key] = True  # type: ignore[index]
             return data, where
-        case "kind_value":
+        case "kind_old_format":
+            # D-011 之前的寫法：圖格種類裡的 value 或 color
             name = draw(st.sampled_from(sorted(kinds)))
-            others = [k["value"] for n, k in kinds.items() if n != name]
-            # 不放 True：True == 1 會跟值是 1 的種類算成撞值；bool_int 另外測
+            field = draw(st.sampled_from(["value", "color"]))
+            kinds[name][field] = 1 if field == "value" else "#000000"
+            return data, f"kinds.{name}.{field}"
+        case "kind_empty":
+            name = draw(st.sampled_from(sorted(kinds)))
+            kinds[name].clear()
+            return data, f"kinds.{name}"
+        case "kind_field":
+            name = draw(st.sampled_from(sorted(kinds)))
+            field = draw(st.sampled_from(["ground", "collision", "height", "slope", "extra"]))
+            bad: dict[str, list[object]] = {
+                "ground": [MISSING, "x?", 1, *BAD_VALUES],
+                "collision": [MISSING, "x?", 1, *BAD_VALUES],
+                "height": [-1, *BAD_VALUES, "1"],
+                "slope": [0, 1, "yes", 1.5, {}, []],
+                "extra": [1],
+            }
+            kinds[name][field] = draw(st.sampled_from(bad[field]))
+            return data, f"kinds.{name}.{field}"
+        case "layer_value":
+            key = draw(st.sampled_from(sorted(sections)))
+            sec = sections[key]
+            name = draw(st.sampled_from(sorted(sec)))
+            others = [v["value"] for n, v in sec.items() if n != name]
+            # 不放 True：True == 1 會跟值是 1 的值算成撞值；bool_int 另外測
             wrong = [v for v in BAD_VALUES if v is not True]
-            kinds[name]["value"] = draw(st.sampled_from([*wrong, 0, -1, *others]))
-            # 撞到的值會報在排在後面的那個種類
-            order = list(kinds)
-            clash = [n for n in order if n != name and kinds[n]["value"] == kinds[name]["value"]]
+            sec[name]["value"] = draw(st.sampled_from([*wrong, 0, -1, *others]))
+            # 撞到的值會報在排在後面的那個
+            order = list(sec)
+            clash = [n for n in order if n != name and sec[n]["value"] == sec[name]["value"]]
             later = max([name, *clash], key=order.index)
-            return data, f"kinds.{later}.value"
-        case "kind_color":
-            name = draw(st.sampled_from(sorted(kinds)))
-            kinds[name]["color"] = draw(st.sampled_from([*BAD_VALUES, "#12345", "red", "#GGGGGG"]))
-            return data, f"kinds.{name}.color"
+            return data, f"{key}.{later}.value"
+        case "layer_color":
+            key = draw(st.sampled_from(sorted(sections)))
+            name = draw(st.sampled_from(sorted(sections[key])))
+            sections[key][name]["color"] = draw(
+                st.sampled_from([*BAD_VALUES, "#12345", "red", "#GGGGGG"])
+            )
+            return data, f"{key}.{name}.color"
+        case "layer_key":
+            key = draw(st.sampled_from(sorted(sections)))
+            name = draw(st.sampled_from(sorted(sections[key])))
+            sections[key][name]["extra"] = 1
+            return data, f"{key}.{name}.extra"
         case "element_key":
             _, _, element = draw(st.sampled_from(elements))
             element["extra"] = 1
@@ -313,11 +357,17 @@ def test_example_village() -> None:
     """典型的規則檔：每種元素與錨點各用一次，照檔案順序讀出。"""
     r = load_rules(EXAMPLE)
     assert (r.seed, r.level_name, r.level_size) == (7, "Village", (40, 30))
-    assert [k.name for k in r.kinds] == ["plaza", "house", "road"]
+    assert r.kinds == (
+        Kind("plaza", ground="dirt"),
+        Kind("house", ground="dirt", collision="wall"),
+        Kind("road", ground="stone"),
+    )
+    assert r.grounds == (LayerValue("dirt", 1, "#C8B27A"), LayerValue("stone", 2, "#8E8E8E"))
+    assert r.collisions == (LayerValue("wall", 1, "#8A4B2F"),)
     assert r.areas[0] == AreaRule("plaza", "plaza", (8, 8), at="center")
     assert r.areas[2] == AreaRule("house_2", "house", (6, 5), near="plaza", side="east", gap=3)
     assert r.paths == (PathRule("main_road", "road", "plaza", "edge:south", 2),)
-    assert r.entities == (EntityRule("spawn", "Spawn", "main_road.end"),)
+    assert r.entities == (EntityRule("spawn", "PlayerSpawn", "main_road.end"),)
 
 
 def test_toml_syntax_error(tmp_path: Path) -> None:
@@ -338,7 +388,8 @@ def test_23_long_reference_chain() -> None:
     data = {
         "seed": 1,
         "level": {"name": "L", "size": [4, 4]},
-        "kinds": {"k": {"value": 1, "color": "#000000"}},
+        "grounds": {"g": {"value": 1, "color": "#000000"}},
+        "kinds": {"k": {"ground": "g"}},
         "area": areas,
     }
     assert len(parse_rules(data).areas) == 3000
@@ -367,7 +418,7 @@ def test_example_only_portals_cross_levels(case: str, where: str) -> None:
     if case == "area-near-other-level":
         data["area"][1]["near"] = "room"  # house_1 在 Village，room 在 House1
     else:
-        spawn = {"name": "spawn", "type": "Spawn", "at": "room.center", "level": "Village"}
+        spawn = {"name": "spawn", "type": "PlayerSpawn", "at": "room.center", "level": "Village"}
         data["entity"] = [spawn]
     with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
         parse_rules(data)
@@ -377,11 +428,13 @@ def test_example_only_portals_cross_levels(case: str, where: str) -> None:
     ("case", "where"),
     [
         ("portal-same-cell", "door_portal.to"),
-        ("type-named-spawn", "entity_types.spawn"),
+        ("type-named-spawn", "entity_types.playerspawn"),
+        ("type-named-teleport", "entity_types.Teleport"),
+        ("type-named-part", "entity_types.Part"),
     ],
 )
 def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
-    """傳送點兩端在同一格、類型跟範本的 Spawn 撞名，都報錯。
+    """傳送點兩端在同一格、類型跟範本的 PlayerSpawn、Teleport、Part 撞名（D-011），都報錯。
 
     1 格高的區域，north 與 south 是同一格。
     """
@@ -392,7 +445,7 @@ def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
         data["area"].append(door)
         data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
     else:
-        data["entity_types"]["spawn"] = {}
+        data["entity_types"][where.split(".")[1]] = {}
     with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
         parse_rules(data)
 
@@ -432,3 +485,63 @@ def test_example_single_table_level_takes_at() -> None:
         "size = [40, 30]  # 格", "size = [40, 30]\nat = [3, -2]"
     )
     assert parse_rules(tomllib.loads(text)).levels[0].at == (3, -2)
+
+
+D011_RULES = """
+seed = 1
+[level]
+name = "Village"
+size = [20, 20]
+
+[grounds]
+grass = { value = 1, color = "#7CB342" }
+dirt  = { value = 2, color = "#C8B27A" }
+
+[collisions]
+wall  = { value = 1, color = "#000000" }
+water = { value = 2, color = "#2F4CBE" }
+
+[kinds]
+plaza = { ground = "dirt" }
+house = { ground = "dirt", collision = "wall" }
+hill  = { ground = "grass", height = 2 }
+ramp  = { ground = "grass", height = 1, slope = true }
+"""
+
+
+def test_example_d011_kinds() -> None:
+    """典型（D-011）：圖格種類寫進不同的層，沒寫的欄位是預設值；值與顏色住在 [grounds] 等。"""
+    r = parse_rules(tomllib.loads(D011_RULES))
+    assert [v.name for v in r.grounds] == ["grass", "dirt"]
+    assert r.collisions[1] == LayerValue("water", 2, "#2F4CBE")
+    assert r.kinds == (
+        Kind("plaza", ground="dirt"),
+        Kind("house", ground="dirt", collision="wall"),
+        Kind("hill", ground="grass", height=2),
+        Kind("ramp", ground="grass", height=1, slope=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "where"),
+    [
+        ({"value": 1, "color": "#C8B27A"}, "kinds.old.value"),
+        ({"color": "#C8B27A", "ground": "dirt"}, "kinds.old.color"),
+        ({}, "kinds.old"),
+        ({"height": 0}, "kinds.old"),
+        ({"slope": False}, "kinds.old"),
+        ({"height": 65}, "kinds.old.height"),
+        ({"ground": "mud"}, "kinds.old.ground"),
+        ({"collision": "dirt"}, "kinds.old.collision"),
+        ({"height": -1}, "kinds.old.height"),
+        ({"slope": 1}, "kinds.old.slope"),
+    ],
+)
+def test_example_d011_old_format_and_mistakes(kind: dict[str, Any], where: str) -> None:
+    """舊寫法（D-011 之前，圖格種類帶 value、color）與新欄位的錯誤：訊息開頭是位置。"""
+    data = tomllib.loads(D011_RULES)
+    data["kinds"] = {"old": kind}
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}：") as error:
+        parse_rules(data)
+    if where.endswith((".value", ".color")):
+        assert "[grounds]" in str(error.value) and "[collisions]" in str(error.value)
