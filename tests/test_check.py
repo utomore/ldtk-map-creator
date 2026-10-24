@@ -272,11 +272,6 @@ def broken_scene(draw: st.DrawFn) -> tuple[SceneMap, str]:
     return scene, expected
 
 
-def _has_slope(r: Rules) -> bool:
-    slopes = {k.name for k in r.kinds if k.slope}
-    return any(a.kind in slopes for a in r.areas) or any(p.kind in slopes for p in r.paths)
-
-
 @pytest.mark.law("CONV-1")
 @settings(max_examples=40, deadline=None)
 @given(fitting_rules, st.booleans(), st.tuples(st.integers(1, 8), st.integers(1, 8)))
@@ -287,12 +282,7 @@ def test_conv_1_generated_and_new_scenes_pass(r: Rules, split: bool, size: tuple
         add_level(blank, "Extra", width_cells=size[0], height_cells=size[1], world_x=4096)
         assert check_scene(blank) == []
         scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk", split=split)
-        problems = check_scene(scene)
-    if _has_slope(r):
-        # 規則可以把斜坡種類畫在沒有高一階鄰格的地方；除此之外一律通過
-        assert all(p.endswith(f"：{SLOPE_PROBLEM}") for p in problems)
-    else:
-        assert problems == []
+        assert check_scene(scene) == []  # 斜坡不合格的規則生成時就擋下了（D-012、GEN-3）
 
 
 @pytest.mark.law("CONV-2")

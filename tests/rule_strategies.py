@@ -192,17 +192,76 @@ def rules(
     seed = draw(st.integers(-(2**63), 2**63 - 1))
     # level 名稱拆開存時就是檔名，Windows 的裝置名稱不合法（RULE-2 會擋）
     level = draw(names.filter(lambda n: n.lower() not in RESERVED_NAMES))
-    return one_level_rules(
-        seed,
-        level,
-        (width, height),
-        kinds,
-        tuple(areas),
-        tuple(paths),
-        tuple(entities),
-        grounds,
-        collisions,
+    return qualified_slopes(
+        one_level_rules(
+            seed,
+            level,
+            (width, height),
+            kinds,
+            tuple(areas),
+            tuple(paths),
+            tuple(entities),
+            grounds,
+            collisions,
+        )
     )
+
+
+def stranded_elements(r: Rules) -> set[str] | None:
+    """有斜坡格四周沒有高一階的格的元素（D-012）；排不下回傳 None。
+
+    獨立於 core 另寫一次：先用配置器算格，再照圖格種類的 height 算每一格的高度。
+    """
+    try:
+        placed = layout(r)
+    except SceneError:
+        return None
+    kinds = {k.name: k for k in r.kinds}
+    kind_of = {e.name: kinds[e.kind] for e in (*r.areas, *r.paths)}
+    heights: dict[tuple[str, int, int], int] = {}
+    for name, cells in placed.cells.items():
+        for x, y in cells:
+            heights[(placed.level_of[name], x, y)] = kind_of[name].height
+    bad: set[str] = set()
+    for name, cells in placed.cells.items():
+        if not kind_of[name].slope:
+            continue
+        level = placed.level_of[name]
+        for x, y in cells:
+            here = heights[(level, x, y)]
+            around = ((x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y))
+            if not any(heights.get((level, nx, ny), 0) == here + 1 for nx, ny in around):
+                bad.add(name)
+                break
+    return bad
+
+
+def qualified_slopes(r: Rules) -> Rules:
+    """把不合格的斜坡元素改用不是斜坡的分身種類（D-012），好讓生成一定成功。
+
+    分身的高度至少 1（高度 0 的斜坡變成一階的平台），所以這些格的 Height 會跟原本不同。
+
+    其他元素的種類不動，所以合格的斜坡還在；排不下的規則原樣回傳。
+    """
+    while True:
+        bad = stranded_elements(r)
+        if not bad:
+            return r
+        taken = {k.name for k in r.kinds}
+        flat: dict[str, str] = {}
+        extra: list[Kind] = []
+        needed = {e.kind for e in (*r.areas, *r.paths) if e.name in bad}
+        for k in r.kinds:
+            if k.name in needed and k.name not in flat:
+                twin = f"{k.name}_flat"
+                while twin in taken:
+                    twin += "_"
+                taken.add(twin)
+                flat[k.name] = twin
+                extra.append(replace(k, name=twin, slope=False, height=max(k.height, 1)))
+        areas = tuple(replace(a, kind=flat[a.kind]) if a.name in bad else a for a in r.areas)
+        paths = tuple(replace(p, kind=flat[p.kind]) if p.name in bad else p for p in r.paths)
+        r = replace(r, kinds=(*r.kinds, *extra), areas=areas, paths=paths)
 
 
 def _writes(kind: Kind) -> bool:
@@ -306,9 +365,14 @@ def to_toml_data(r: Rules, *, array: bool = False) -> dict[str, Any]:
     return data
 
 
+def village_rules() -> st.SearchStrategy[Rules]:
+    """像村莊的規則，斜坡都合格（D-012）。"""
+    return _raw_village_rules().map(qualified_slopes)
+
+
 @st.composite
-def village_rules(draw: st.DrawFn) -> Rules:
-    """像村莊的規則：一兩個固定的區域，其餘大多靠近別人，加上路徑與 entity。
+def _raw_village_rules(draw: st.DrawFn) -> Rules:
+    """像村莊的規則（斜坡還沒保證合格）：一兩個固定的區域，其餘大多靠近別人，加上路徑與 entity。
 
     通用的 `rules()` 多半排不下或很稀疏；配置的 law 要常常碰撞、常常擠開才測得到。
     """
@@ -419,7 +483,7 @@ def placeable_village_rules(draw: st.DrawFn) -> Rules:
                 raise
             r = smaller
             continue
-        return r
+        return qualified_slopes(r)
 
 
 def to_toml_text(r: Rules) -> str:
@@ -565,17 +629,19 @@ def multi_rules(draw: st.DrawFn) -> Rules:
             portals.append(PortalRule(name, start, to))
     entities = [_retyped(draw, e, types) for e in entities]
     seed = draw(st.integers(-(2**63), 2**63 - 1))
-    return Rules(
-        seed,
-        tuple(levels),
-        kinds,
-        tuple(areas),
-        tuple(paths),
-        tuple(entities),
-        tuple(types),
-        tuple(portals),
-        VILLAGE_GROUNDS,
-        VILLAGE_COLLISIONS,
+    return qualified_slopes(
+        Rules(
+            seed,
+            tuple(levels),
+            kinds,
+            tuple(areas),
+            tuple(paths),
+            tuple(entities),
+            tuple(types),
+            tuple(portals),
+            VILLAGE_GROUNDS,
+            VILLAGE_COLLISIONS,
+        )
     )
 
 
@@ -621,7 +687,7 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     有時再宣告一種 entity 類型，把一些 PlayerSpawn 換成它。
     """
     count = draw(st.integers(2, 3))
-    parts = [draw(village_rules()) for _ in range(count)]
+    parts = [draw(_raw_village_rules()) for _ in range(count)]
     levels: list[LevelRule] = []
     used: list[tuple[int, int]] = []
     for i, part in enumerate(parts):
@@ -662,17 +728,19 @@ def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
                 st.lists(st.sampled_from(anchors), min_size=2, max_size=2, unique=True)
             )
             portals.append(PortalRule(f"door{i}", start, to))
-    return Rules(
-        parts[0].seed,
-        tuple(levels),
-        parts[0].kinds,
-        areas,
-        paths,
-        tuple(entities),
-        tuple(types),
-        tuple(portals),
-        parts[0].grounds,
-        parts[0].collisions,
+    return qualified_slopes(
+        Rules(
+            parts[0].seed,
+            tuple(levels),
+            parts[0].kinds,
+            areas,
+            paths,
+            tuple(entities),
+            tuple(types),
+            tuple(portals),
+            parts[0].grounds,
+            parts[0].collisions,
+        )
     )
 
 
@@ -702,4 +770,4 @@ def placeable_multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> R
                 raise
             r = smaller
             continue
-        return r
+        return qualified_slopes(r)

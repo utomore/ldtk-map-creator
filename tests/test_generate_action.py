@@ -538,3 +538,28 @@ def test_example_broken_overview_is_removed(
     result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1, layer="Slope")
     assert "世界總覽畫不出來" in result.summary
     assert not overview.exists()
+
+
+def test_example_stranded_slope_leaves_files_unchanged(tmp_path: Path) -> None:
+    """曾經壞過的地方（D-012）：斜坡不合格時第一次生成不寫檔，重新生成時磁碟上的檔不變。"""
+    path = tmp_path / "village.ldtk"
+    terrain = EXAMPLE.with_name("village_terrain.rules.toml")
+    text = terrain.read_text(encoding="utf-8")
+    ramp = 'name = "ramp"\nkind = "ramp"\nsize = [3, 1]'
+    assert text.count(ramp) == 1  # 只改 ramp 那一塊
+    wide = text.replace(ramp, ramp.replace("[3, 1]", "[3, 2]"))
+    record.rules_path(path).write_text(wide, encoding="utf-8")
+    with pytest.raises(SceneError, match=r"^ramp\.kind：斜坡格"):
+        actions.generate_scene(path)
+    assert not path.exists()
+    shutil.copy(terrain, record.rules_path(path))
+    actions.generate_scene(path)
+    before = _files(tmp_path)
+    record.rules_path(path).write_text(wide, encoding="utf-8")
+    with pytest.raises(SceneError, match=r"^ramp\.kind：斜坡格"):
+        actions.generate_scene(path, force=True)
+    after = _files(tmp_path)
+    rules_file = str(record.rules_path(path).relative_to(tmp_path))
+    assert {k: v for k, v in after.items() if k != rules_file} == {
+        k: v for k, v in before.items() if k != rules_file
+    }
