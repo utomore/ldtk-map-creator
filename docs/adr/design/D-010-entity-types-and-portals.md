@@ -22,12 +22,11 @@ decision-makers: [utomore]
 ## 決策
 
 - 規則檔用 `[entity_types]` 宣告 entity 類型：顏色、大小、欄位（欄位型別至少 Int、Float、Bool、String、EntityRef）。
-- 範本原有的 `Spawn` 照舊能用；規則檔宣告的類型加在它旁邊。
+- 分層慣例的 entity（`PlayerSpawn`、`Teleport`、`Part`）由 D-011 固定，`[entity_types]` 只宣告遊戲自己的。
 - 傳送點是新的一種元素 `[[portal]]`：`from`、`to` 是兩個錨點，可以在不同 level。
-- 生成時兩邊各擺一個傳送點 entity，`target` 欄位互指；iid 由 seed 加元素名稱推出，重新生成引用不斷（D-007）。
+- 生成時兩邊各擺一個 `Teleport`，`targetPort` 欄位互指（D-011）；iid 由 seed 加元素名稱推出，重新生成引用不斷（D-007）。
 - 區域加上四邊的錨點 `.north`、`.east`、`.south`、`.west`：在區域自己的格裡、那一邊的正中央。
 
 ## 三個月後的影響
 
-- `[entity_types]` 跟 `[kinds]` 一樣，到 M4 跟分層慣例一起決定由誰管。
-- 傳送點的類型名稱與欄位名稱（例如 `target`）是規則檔寫的，遊戲端讀的時候要對得上。
+- 傳送點的類型名稱與欄位名稱照 D-011，引擎直接讀得到。

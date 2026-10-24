@@ -43,6 +43,7 @@ decision-makers: [帳號]
 | [D-008](design/D-008-tweak-via-rules.md) | 從規則生成的場景地圖，微調一律改規則檔再重新生成 |
 | [D-009](design/D-009-multi-level-rules.md) | 規則檔用 `[[level]]` 陣列描述多個 level 與世界佈局 |
 | [D-010](design/D-010-entity-types-and-portals.md) | entity 類型由規則檔宣告，傳送點是一種元素 |
+| [D-011](design/D-011-layer-convention.md) | 分層慣例照 WeftEngine 讀的名稱；慣例是下限 |
 
 ## 流程
 
@@ -57,7 +58,6 @@ decision-makers: [帳號]
 
 方向已定、細節還要討論的，定案時各寫成一份。
 
-- 第二把尺加上分層慣例：慣例到 M4 才定稿，卡在慣例本身還沒定（P-002）。
 - CD：工具在本機跑、沒有部署目標，M4 之後再定（P-004）。
 
 上線之前是第一版的建置期：決定改了就直接改寫那一份，「當前情境」只寫這個案子的需求與限制。
