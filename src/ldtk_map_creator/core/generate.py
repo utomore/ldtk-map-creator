@@ -62,6 +62,7 @@ def generate_scene(
                 width=width,
                 height=height,
                 field_types=dict(kind.fields),
+                tags=kind.tags,
             )
         except SceneError as error:
             raise SceneError(f"entity_types.{kind.name}：{error}") from error

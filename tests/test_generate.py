@@ -12,6 +12,7 @@ from hypothesis import strategies as st
 
 from ldtk_map_creator.core import template
 from ldtk_map_creator.core.check import check_scene
+from ldtk_map_creator.core.edit import place_entity
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import (
     area_part_iid,
@@ -298,6 +299,9 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
                     )
                     continue
                 got[by_iid[e["iid"]]] = tuple(e["__grid"])
+                declared_tags = {t.name: list(t.tags) for t in r.entity_types}
+                if rule_of[by_iid[e["iid"]]].type in declared_tags:
+                    assert e["__tags"] == declared_tags[rule_of[by_iid[e["iid"]]].type]
                 assert placed.level_of[by_iid[e["iid"]]] == level_name
                 _check_entity_fields(e, rule_of[by_iid[e["iid"]]], entity_defs)
     assert got == placed.entities
@@ -316,6 +320,7 @@ def test_gen_2_layout_fits_and_matches_scene(r: Rules) -> None:
         made = defs[declared.name]
         assert (made["color"], (made["width"], made["height"])) == (declared.color, declared.size)
         assert [(f["identifier"], f["__type"]) for f in made["fieldDefs"]] == list(declared.fields)
+        assert made["tags"] == list(declared.tags)
 
 
 @pytest.mark.law("GEN-3")
@@ -877,7 +882,9 @@ def test_example_portal_across_levels_hits_world_max_count(
         generate_scene(r, tmp_path / "scene.ldtk")
 
 
-def _convention_problems(scene: SceneMap) -> list[str]:
+def _convention_problems(
+    scene: SceneMap, declared: dict[str, list[str]] | None = None
+) -> list[str]:
     """場景地圖有沒有照 D-011 的五層與三種 entity 定義；獨立於 core 另寫一次名稱。"""
     problems: list[str] = []
     layers = [(d["identifier"], d["type"]) for d in scene.project["defs"]["layers"]]
@@ -906,8 +913,8 @@ def _convention_problems(scene: SceneMap) -> list[str]:
         ):
             problems.append(f"{name} 的 tags 或欄位不對")
     for name, found in defs.items():
-        if name not in shapes and found["tags"]:
-            problems.append(f"{name} 不該帶 tags")
+        if name not in shapes and found["tags"] != (declared or {}).get(name, []):
+            problems.append(f"{name} 的 tags 不是宣告的值")
     for level in scene.project["levels"]:
         placed = [ly["__identifier"] for ly in level["layerInstances"] or []]
         if placed != [name for name, _ in wanted]:
@@ -927,7 +934,8 @@ def test_scene_8_new_and_generated_scenes_follow_the_convention(
         add_level(blank, "Extra", width_cells=size[0], height_cells=size[1], world_x=4096)
         assert _convention_problems(blank) == []
         scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk", split=split)
-        assert _convention_problems(scene) == []
+        declared = {t.name: list(t.tags) for t in r.entity_types}
+        assert _convention_problems(scene, declared) == []
 
 
 def test_example_terrain_village() -> None:
@@ -994,3 +1002,41 @@ def test_example_area_part_collides_with_entity(tmp_path: Path) -> None:
     with pytest.raises(SceneError, match=r"^spawn\.at：跟「home 的零件」擺在同一格"):
         generate_scene(_house_rules(center), path)
     assert not path.exists()  # 丟錯時還沒寫任何檔
+
+
+def test_example_declared_tags_reach_definition_and_instance(tmp_path: Path) -> None:
+    """典型（D-010）：`Spot`、`Debris` 帶 tags、`Plain` 沒寫；定義與實例的 tags 都照宣告。"""
+    base = load_rules(EXAMPLE)
+    types = (
+        EntityType("Spot", tags=("hidden",)),
+        EntityType("Debris", tags=("world", "hidden")),
+        EntityType("Plain"),
+    )
+    entities = tuple(EntityRule(f"e{i}", t.name, (i, 0), level=None) for i, t in enumerate(types))
+    r = dataclasses.replace(base, entity_types=types, entities=entities, portals=())
+    scene, _ = generate_scene(r, tmp_path / "scene.ldtk")
+    defs = {d["identifier"]: d for d in scene.project["defs"]["entities"]}
+    assert [defs[t.name]["tags"] for t in types] == [["hidden"], ["world", "hidden"], []]
+    by_uid = {d["uid"]: d["identifier"] for d in defs.values()}
+    found = {
+        by_uid[e["defUid"]]: e["__tags"]
+        for level in scene.project["levels"]
+        for layer in level["layerInstances"] or []
+        for e in layer["entityInstances"]
+        if by_uid[e["defUid"]] in {t.name for t in types}
+    }
+    assert found == {"Spot": ["hidden"], "Debris": ["world", "hidden"], "Plain": []}
+    assert check_scene(scene) == []
+
+
+def test_example_entity_def_tags_still_checked_by_layer_tags(tmp_path: Path) -> None:
+    """邊界（曾經要守住的地方）：圖層的 excluded tags 照舊擋，帶 tags 的類型擺不上去。"""
+    r = dataclasses.replace(
+        load_rules(EXAMPLE), entity_types=(EntityType("Spot", tags=("hidden",)),)
+    )
+    scene, _ = generate_scene(r, tmp_path / "scene.ldtk")
+    place_entity(scene, "Village", "Spot", x=1, y=1)  # 沒有 excluded tags 時擺得上去
+    layer_def = next(d for d in scene.project["defs"]["layers"] if d["identifier"] == "Entities")
+    layer_def["excludedTags"] = ["hidden"]
+    with pytest.raises(SceneError):
+        place_entity(scene, "Village", "Spot", x=2, y=2)

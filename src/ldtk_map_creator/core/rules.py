@@ -113,12 +113,13 @@ class EntityRule:
 
 @dataclass(frozen=True)
 class EntityType:
-    """規則檔宣告的 entity 類型（D-010）：顏色、大小（像素）、欄位（名稱 → 型別）。"""
+    """規則檔宣告的 entity 類型（D-010）：顏色、大小（像素）、欄位（名稱 → 型別）、tags。"""
 
     name: str
     color: str = DEFAULT_ENTITY_COLOR
     size: Cell = DEFAULT_ENTITY_SIZE
     fields: tuple[tuple[str, str], ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -425,7 +426,7 @@ def _entity_types(raw: object) -> tuple[EntityType, ...]:
         if name.lower() in builtin:
             raise SceneError(f"{where}：範本已經有 {name} 這個 entity 定義，換個名字")
         table = _table(value, where)
-        _keys(table, where, required=set(), optional={"color", "size", "fields"})
+        _keys(table, where, required=set(), optional={"color", "size", "fields", "tags"})
         color = _str(table.get("color", DEFAULT_ENTITY_COLOR), f"{where}.color")
         if not _COLOR.fullmatch(color):
             raise SceneError(f'{where}.color：要是 "#RRGGBB"：{color!r}')
@@ -439,7 +440,8 @@ def _entity_types(raw: object) -> tuple[EntityType, ...]:
             if any(f.lower() == field.lower() for f, _ in fields):
                 raise SceneError(f"{where}.fields.{field}：欄位名稱重複（不分大小寫）")
             fields.append((field, cast(str, kind)))
-        found.append(EntityType(name, color, size, tuple(fields)))
+        tags = _tags(table.get("tags", []), f"{where}.tags")
+        found.append(EntityType(name, color, size, tuple(fields), tags))
     return tuple(found)
 
 
@@ -770,6 +772,21 @@ def _tables(data: dict[str, Any], key: str) -> list[object]:
     if not isinstance(value, list):
         raise SceneError(f"{key}：要寫成 [[{key}]]：{value!r}")
     return cast(list[object], value)
+
+
+def _tags(raw: object, where: str) -> tuple[str, ...]:
+    """tags：字串陣列；不能有空白的字串，也不能重複。"""
+    if not isinstance(raw, list):
+        raise SceneError(f"{where}：要是字串陣列：{raw!r}")
+    found: list[str] = []
+    for tag in cast(list[object], raw):
+        text = _str(tag, f"{where}[{len(found)}]")
+        if not text.strip():
+            raise SceneError(f"{where}：tag 不能是空白：{text!r}")
+        if text in found:
+            raise SceneError(f"{where}：tag 重複：{text!r}")
+        found.append(text)
+    return tuple(found)
 
 
 def _str(value: object, where: str) -> str:
