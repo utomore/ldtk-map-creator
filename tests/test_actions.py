@@ -167,6 +167,6 @@ def test_example_neighbour_only_change_is_not_redrawn(tmp_path: Path) -> None:
     path = tmp_path / "village.ldtk"
     actions.create_scene(path)
     result = actions.add_level(path, "East", width_cells=4, height_cells=4, world_x=256)
-    assert [p.name for p in result.previews] == ["East.png"]
+    assert [p.name for p in result.previews] == ["East.png", "world-overview.png"]
     neighbours = load_scene(path).level("Level_0")["__neighbours"]
     assert neighbours != []  # Level_0 的檔照樣更新了相鄰關係

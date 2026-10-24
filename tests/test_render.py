@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 from PIL import Image, ImageChops
 
 from ldtk_map_creator.core import record
-from ldtk_map_creator.core.edit import paint_cells, place_entity
+from ldtk_map_creator.core.edit import add_entity_def, paint_cells, place_entity
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import generate_scene
 from ldtk_map_creator.core.record import name_positions
@@ -22,11 +22,18 @@ from ldtk_map_creator.core.render import (
     image_size,
     name_boxes,
     render_level,
+    render_world,
+    world_links,
+    world_view,
     write_preview,
 )
 from ldtk_map_creator.core.rules import AreaRule, EntityRule, Kind, Rules
 from ldtk_map_creator.core.scene import SceneMap, add_level, load_scene, new_scene, save_scene
-from tests.rule_strategies import one_level_rules, placeable_village_rules
+from tests.rule_strategies import (
+    one_level_rules,
+    placeable_multi_village_rules,
+    placeable_village_rules,
+)
 
 FAST = settings(max_examples=30, deadline=None)
 
@@ -408,3 +415,127 @@ def test_example_record_with_nan_position_is_skipped() -> None:
     """生成紀錄裡的位置是 NaN 或 Infinity（JSON 讀得進來）時略過，不讓 render 當掉。"""
     saved = {"labels": {"L": [["a", float("nan"), 1], ["b", 1, float("inf")], ["c", 1, 1]]}}
     assert record.labels(saved, "L") == [("c", 1.0, 1.0)]
+
+
+@pytest.mark.law("RENDER-6")
+@settings(max_examples=30, deadline=None)
+@given(
+    placeable_multi_village_rules(min_portals=1),
+    st.sampled_from(["Free", "LinearHorizontal", "LinearVertical"]),
+)
+def test_render_6_world_overview(r: Rules, arrangement: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        scene, _ = generate_scene(r, Path(tmp) / "scene.ldtk")
+    levels = scene.project["levels"]
+    # 線性排法：LDtk 把世界座標存成 -1，照 level 的順序接著排（這裡獨立另算一次）
+    at = {lv["identifier"]: (lv["worldX"], lv["worldY"]) for lv in levels}
+    if arrangement != "Free":
+        scene.project["worldLayout"] = arrangement
+        offset = 0
+        for lv in levels:
+            horizontal = arrangement == "LinearHorizontal"
+            at[lv["identifier"]] = (offset, 0) if horizontal else (0, offset)
+            offset += lv["pxWid"] if horizontal else lv["pxHei"]
+            lv["worldX"], lv["worldY"] = -1, -1
+    image = render_world(scene)
+    assert image.tobytes() == render_world(scene).tobytes()  # 同一份場景地圖，位元組相同
+    left = min(x for x, _ in at.values())
+    top = min(y for _, y in at.values())
+    span = max(
+        max(at[lv["identifier"]][0] + lv["pxWid"] for lv in levels) - left,
+        max(at[lv["identifier"]][1] + lv["pxHei"] for lv in levels) - top,
+    )
+    scale = min(1.0, 1600 / span)
+    frame = (24, 26, 34, 255)
+    rects = world_view(scene).rects
+    for level in levels:  # 照世界座標等比例縮小，左上角留邊框
+        x, y, w, h = rects[level["identifier"]]
+        wx, wy = at[level["identifier"]]
+        assert (x, y) == (MARGIN + round((wx - left) * scale), MARGIN + round((wy - top) * scale))
+        assert (w, h) == (
+            max(1, round(level["pxWid"] * scale)),
+            max(1, round(level["pxHei"] * scale)),
+        )
+        background = sum(
+            1 for i in range(w) for j in range(h) if image.getpixel((x + i, y + j)) == frame
+        )
+        assert background < 0.1 * w * h, level["identifier"]  # level 有畫出來，不是空白
+        # IntGrid 有畫出來：level 裡用到的種類，顏色出現在它的範圍裡
+        intgrid = next(ly for ly in level["layerInstances"] or [] if ly["__type"] == "IntGrid")
+        used = {v for v in intgrid["intGridCsv"] if v}
+        colors = {_hex(k.color) for k in r.kinds if k.value in used}
+        seen = {image.getpixel((x + i, y + j)) for i in range(w) for j in range(h)}
+        assert not colors or colors & seen, level["identifier"]
+        # entity 方塊也畫出來（倍率夠大、方塊比線的端點大的時候才看得到）
+        if scale >= 0.5:
+            types = {
+                _hex(d["color"])
+                for d in scene.project["defs"]["entities"]
+                for ly in level["layerInstances"] or []
+                for e in ly["entityInstances"]
+                if e["defUid"] == d["uid"]
+            }
+            assert types <= seen, level["identifier"]
+    # 每一對互指的 EntityRef（傳送點）畫一條線：兩端換成總覽座標後，中點附近是線的顏色
+    links = world_links(scene)
+    assert len(links) == len(r.portals)
+    for start, end in links:
+        (x0, y0), (x1, y1) = (
+            (MARGIN + round((px - left) * scale), MARGIN + round((py - top) * scale))
+            for px, py in (start, end)
+        )
+        mx, my = (x0 + x1) // 2, (y0 + y1) // 2
+        around = [
+            cast(tuple[int, ...], image.getpixel((mx + dx, my + dy)))[:3]
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+        ]
+        assert (255, 214, 0) in around, (mx, my)
+
+
+def _two_rooms(tmp_path: Path) -> SceneMap:
+    scene = new_scene(tmp_path / "scene.ldtk")
+    scene.project["levels"].clear()
+    add_level(scene, "Village", width_cells=8, height_cells=4)
+    add_level(scene, "Inn", width_cells=3, height_cells=2, world_x=200, world_y=0)
+    return scene
+
+
+def test_example_linear_layout_lines_levels_up(tmp_path: Path) -> None:
+    """LDtk 的線性排法把世界座標存成 -1：照 level 的順序接著排，不疊成一團。"""
+    scene = _two_rooms(tmp_path)
+    scene.project["worldLayout"] = "LinearHorizontal"
+    for level in scene.project["levels"]:
+        level["worldX"], level["worldY"] = -1, -1
+    rects = world_view(scene).rects
+    assert rects["Inn"][0] == rects["Village"][0] + rects["Village"][2]
+    assert rects["Inn"][1] == rects["Village"][1]
+
+
+def test_example_links_follow_layer_offsets_and_one_way_refs(tmp_path: Path) -> None:
+    """連線的端點算進圖層定義的偏移（跟 render 一樣）；單向的引用也畫線。"""
+    scene = _two_rooms(tmp_path)
+    add_entity_def(scene, "Sign", field_types={"to": "EntityRef"})
+    target = place_entity(scene, "Inn", "Sign", x=0, y=0)["iid"]
+    place_entity(scene, "Village", "Sign", x=0, y=0, values={"to": target})
+    plain = world_links(scene)
+    assert len(plain) == 1  # 單向也算一條
+    entities = next(d for d in scene.project["defs"]["layers"] if d["type"] == "Entities")
+    entities["pxOffsetX"] = 16
+    moved = world_links(scene)
+    assert [round(a[0] - b[0]) for a, b in zip(moved[0], plain[0], strict=True)] == [16, 16]
+
+
+def test_example_small_level_name_stays_inside(tmp_path: Path) -> None:
+    """level 縮得很小時，名稱縮字或不寫，不蓋到旁邊的 level。"""
+    scene = new_scene(tmp_path / "scene.ldtk")
+    scene.project["levels"].clear()
+    add_level(scene, "A_very_long_level_name", width_cells=2, height_cells=2)
+    add_level(scene, "Huge", width_cells=400, height_cells=10, world_x=40, world_y=0)
+    image = render_world(scene)
+    x, y, w, h = world_view(scene).rects["A_very_long_level_name"]
+    huge = world_view(scene).rects["Huge"]
+    gap = {  # 兩個 level 之間的空地
+        image.getpixel((gx, gy)) for gx in range(x + w, huge[0]) for gy in range(y, y + h)
+    }
+    assert gap <= {(24, 26, 34, 255)}
