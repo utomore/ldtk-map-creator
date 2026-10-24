@@ -44,6 +44,7 @@ decision-makers: [帳號]
 | [D-009](design/D-009-multi-level-rules.md) | 規則檔用 `[[level]]` 陣列描述多個 level 與世界佈局 |
 | [D-010](design/D-010-entity-types-and-portals.md) | entity 類型由規則檔宣告，傳送點是一種元素 |
 | [D-011](design/D-011-layer-convention.md) | 分層慣例照 WeftEngine 讀的名稱；慣例是下限 |
+| [D-012](design/D-012-generate-guarantees-convention.md) | 生成保證照分層慣例：斜坡不合格就擋下 |
 
 ## 流程
 
