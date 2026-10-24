@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 from . import convention, template
 from .errors import SceneError
 from .fields import FIELD_TYPES, value_fits
-from .scene import IDENTIFIER, RESERVED_NAMES
+from .scene import IDENTIFIER, MAX_GRID, RESERVED_NAMES
 
 Side = Literal["north", "east", "south", "west"]
 SIDES: tuple[Side, ...] = ("north", "east", "south", "west")
@@ -30,7 +30,6 @@ PATH_ANCHORS = ("start", "end")
 DEFAULT_GAP = 2
 DEFAULT_ENTITY_COLOR = "#BE4A2F"
 DEFAULT_GRID = 16
-MAX_GRID = 1024  # 再大的格子，level 的像素大到畫不出預覽圖
 
 
 @dataclass(frozen=True)

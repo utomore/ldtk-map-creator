@@ -489,8 +489,11 @@ def test_example_grid_96_and_default(tmp_path: Path) -> None:
     plain, _ = generate_scene(r, tmp_path / "plain.ldtk")
     assert plain.project["defaultGridSize"] == 16
     assert all(d["gridSize"] == 16 for d in plain.project["defs"]["layers"])
-    with pytest.raises(SceneError):
-        generate_scene(dataclasses.replace(r, grid=0), tmp_path / "zero.ldtk")
+    for bad in (0, 1025):  # 沒經過規則檔檢查的 Rules 也擋（1 到 1024）
+        with pytest.raises(SceneError):
+            generate_scene(dataclasses.replace(r, grid=bad), tmp_path / "bad.ldtk")
+    edge, _ = generate_scene(dataclasses.replace(r, grid=1024), tmp_path / "edge.ldtk")
+    assert edge.project["defaultGridSize"] == 1024
 
 
 def test_example_village() -> None:
@@ -1074,9 +1077,9 @@ def test_example_declared_tags_reach_definition_and_instance(tmp_path: Path) -> 
     """典型（D-010）：`Spot`、`Debris` 帶 tags、`Plain` 沒寫；定義與實例的 tags 都照宣告。"""
     base = load_rules(EXAMPLE)
     types = (
-        EntityType("Spot", tags=("hidden",)),
-        EntityType("Debris", tags=("world", "hidden")),
-        EntityType("Plain"),
+        EntityType("Spot", "#BE4A2F", (16, 16), tags=("hidden",)),
+        EntityType("Debris", "#BE4A2F", (16, 16), tags=("world", "hidden")),
+        EntityType("Plain", "#BE4A2F", (16, 16)),
     )
     entities = tuple(EntityRule(f"e{i}", t.name, (i, 0), level=None) for i, t in enumerate(types))
     r = dataclasses.replace(base, entity_types=types, entities=entities, portals=())

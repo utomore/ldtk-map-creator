@@ -19,6 +19,7 @@ RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {
     f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)
 }
 _HEADER_KEY = "__header__"
+MAX_GRID = 1024  # 格子大小的上限（像素）；擋掉打錯的值，不保證任何大小都畫得出預覽圖
 
 
 @dataclass
@@ -104,8 +105,8 @@ def new_scene(
         leftover = path.parent / path.stem
         if leftover.is_dir() and any(leftover.glob("*.ldtkl")):
             raise SceneError(f"{leftover} 裡已經有 level 檔，不覆蓋；先移走再建")
-    if grid < 1:
-        raise SceneError(f"格子大小至少 1 像素：{grid}")
+    if not 1 <= grid <= MAX_GRID:
+        raise SceneError(f"格子大小要在 1 到 {MAX_GRID} 像素之間：{grid}")
     project = template.project()
     _set_grid(project, grid)
     project["iid"] = ""

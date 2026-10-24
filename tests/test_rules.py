@@ -35,7 +35,7 @@ BAD_VALUES: list[object] = [True, 1.5, {}, [], "x?"]
 
 @pytest.mark.law("RULE-1")
 @FAST
-@given(rules() | multi_rules(), st.booleans(), st.integers(1, 256))
+@given(rules() | multi_rules(), st.booleans(), st.sampled_from([1, 96, 1024]) | st.integers(1, 256))
 def test_valid_rules_round_trip(expected: Rules, array: bool, grid: int) -> None:
     # 只有一個 level 時，M2 的 [level] 與 D-009 的 [[level]] 兩種寫法都讀得回原樣
     assert parse_rules(to_toml_data(expected, array=array)) == expected
