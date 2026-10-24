@@ -406,10 +406,5 @@ def test_example_axis_numbers_stay_on_top(tmp_path: Path) -> None:
 
 def test_example_record_with_nan_position_is_skipped() -> None:
     """生成紀錄裡的位置是 NaN 或 Infinity（JSON 讀得進來）時略過，不讓 render 當掉。"""
-    saved = {
-        "labels": {
-            "level": "L",
-            "names": [["a", float("nan"), 1], ["b", 1, float("inf")], ["c", 1, 1]],
-        }
-    }
+    saved = {"labels": {"L": [["a", float("nan"), 1], ["b", 1, float("inf")], ["c", 1, 1]]}}
     assert record.labels(saved, "L") == [("c", 1.0, 1.0)]

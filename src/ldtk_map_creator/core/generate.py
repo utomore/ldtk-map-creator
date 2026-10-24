@@ -1,4 +1,4 @@
-"""照規則生成場景地圖（D-007）：配置之後畫進一個 level。
+"""照規則生成場景地圖（D-007、D-009、D-010）：配置之後畫進每個 level。
 
 同規則同 seed，寫出的檔完全相同：iid 與圖層的 seed 都由 seed 加名字推出。
 """
@@ -7,10 +7,11 @@ import random
 from pathlib import Path
 
 from .derived import refresh_derived
-from .edit import paint_cells, place_entity
+from .edit import add_entity_def, paint_cells, place_entity
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
+from .model import Level
 from .rules import Rules
 from .scene import SceneMap, add_level, new_scene
 
@@ -27,13 +28,10 @@ def generate_scene(
 
     `overwrite=True` 時磁碟上已經有這個場景地圖也照樣建，寫檔時蓋掉（重新生成）。
     """
-    placed = layout(rules)  # 多個 level 的配置還沒做，配置器先擋（#36）
-    # 傳送點（#37）與 entity 類型（#36）的生成還沒做；先講清楚，不默默丟掉
+    placed = layout(rules)
+    # 傳送點的生成還沒做（#37）；先講清楚，不默默丟掉
     if rules.portals:
         raise SceneError(f"{rules.portals[0].name}.from：傳送點的生成還不支援（#37）")
-    if rules.entity_types:
-        name = rules.entity_types[0].name
-        raise SceneError(f"entity_types.{name}：entity 類型的生成還不支援（#36）")
     scene = new_scene(path, split=split, overwrite=overwrite)
     project = scene.project
     for layer_type in ("IntGrid", "Entities"):
@@ -45,31 +43,44 @@ def generate_scene(
         {"value": k.value, "identifier": k.name, "color": k.color, "tile": None, "groupUid": 0}
         for k in rules.kinds
     ]
+    # 規則宣告的 entity 類型變成 LDtk 的 entity 定義，加在範本的 Spawn 旁邊（D-010）
+    for kind in rules.entity_types:
+        width, height = kind.size
+        try:
+            add_entity_def(
+                scene,
+                kind.name,
+                color=kind.color,
+                width=width,
+                height=height,
+                field_types=dict(kind.fields),
+            )
+        except SceneError as error:
+            raise SceneError(f"entity_types.{kind.name}：{error}") from error
+
     project["levels"].clear()  # 範本附的 Level_0
-    width, height = rules.level_size
     grid = project["defaultGridSize"]
-    # 世界座標以格為單位（D-009）；只有一個 level，所以不會有 near。#36 改成從配置結果取
-    at = rules.levels[0].at or (0, 0)
-    level = add_level(
-        scene,
-        rules.level_name,
-        width_cells=width,
-        height_cells=height,
-        world_x=at[0] * grid,
-        world_y=at[1] * grid,
-    )
-    name = rules.level_name
+    levels: dict[str, Level] = {}
+    for name, (x, y, w, h) in placed.levels.items():  # 世界座標以格為單位（D-009）
+        levels[name] = add_level(
+            scene, name, width_cells=w, height_cells=h, world_x=x * grid, world_y=y * grid
+        )
 
     value = {k.name: k.value for k in rules.kinds}
-    kind = {e.name: e.kind for e in (*rules.areas, *rules.paths)}
+    kind_of = {e.name: e.kind for e in (*rules.areas, *rules.paths)}
     for element, cells in placed.cells.items():
-        if kind[element] not in value:
-            raise SceneError(f"{element}.kind：[kinds] 裡沒有 {kind[element]}")
-        paint_cells(scene, name, cells=sorted(cells), value=value[kind[element]])
+        if kind_of[element] not in value:
+            raise SceneError(f"{element}.kind：[kinds] 裡沒有 {kind_of[element]}")
+        level = placed.level_of[element]
+        paint_cells(scene, level, cells=sorted(cells), value=value[kind_of[element]])
     entities_def = next(d["uid"] for d in project["defs"]["layers"] if d["type"] == "Entities")
-    layers = level["layerInstances"] or []
-    entity_layer = next(ly for ly in layers if ly["layerDefUid"] == entities_def)
+    entity_layers = {
+        name: next(ly for ly in lv["layerInstances"] or [] if ly["layerDefUid"] == entities_def)
+        for name, lv in levels.items()
+    }
     for entity in rules.entities:
+        name = placed.level_of[entity.name]
+        entity_layer = entity_layers[name]
         x, y = placed.entities[entity.name]
         before = len(entity_layer["entityInstances"])
         try:
@@ -84,11 +95,12 @@ def generate_scene(
 
     project["iid"] = derived_iid(rules.seed, "project")
     project["dummyWorldIid"] = derived_iid(rules.seed, "world")
-    level["iid"] = derived_iid(rules.seed, f"level:{name}")
     defs = {d["uid"]: d["identifier"] for d in project["defs"]["layers"]}
-    for layer in level["layerInstances"] or []:
-        key = f"layer:{name}:{defs[layer['layerDefUid']]}"
-        layer["iid"] = derived_iid(rules.seed, key)
-        layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
+    for name, level in levels.items():
+        level["iid"] = derived_iid(rules.seed, f"level:{name}")
+        for layer in level["layerInstances"] or []:
+            key = f"layer:{name}:{defs[layer['layerDefUid']]}"
+            layer["iid"] = derived_iid(rules.seed, key)
+            layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
     refresh_derived(project)
     return scene, placed

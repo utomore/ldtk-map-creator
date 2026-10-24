@@ -19,7 +19,14 @@ from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.render import preview_path, render_level
 from ldtk_map_creator.core.rules import Rules
 from ldtk_map_creator.core.scene import load_scene
-from tests.rule_strategies import placeable_village_rules, to_toml_text
+from tests.rule_strategies import (
+    placeable_multi_village_rules,
+    placeable_village_rules,
+    to_toml_text,
+)
+
+# 單一 level 與多個 level 的規則都要測到
+fitting = placeable_village_rules() | placeable_multi_village_rules()
 
 FAST = settings(max_examples=40, deadline=None)
 EXAMPLE = Path(__file__).parent / "data" / "village.rules.toml"
@@ -36,7 +43,7 @@ def _write_rules(r: Rules, path: Path) -> None:
 @pytest.mark.law("GEN-5")
 @pytest.mark.law("SCENE-5")
 @FAST
-@given(placeable_village_rules())
+@given(fitting)
 def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
@@ -47,10 +54,15 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
         assert saved is not None
         on_disk = load_scene(path)
         assert saved["content"] == record.content(on_disk)
-        with Image.open(preview_path(on_disk, r.level_name)) as image:
-            names = record.labels(saved, r.level_name)
-            expected = render_level(on_disk, r.level_name, labels=names)
-            assert image.tobytes() == expected.tobytes()
+        for level in r.levels:
+            # 每個 level 的名稱剛好是那個 level 的區域與路徑（不靠紀錄自己對答案）
+            here = {e.name for e in (*r.areas, *r.paths) if r.level_of(e).name == level.name}
+            assert {n for n, _, _ in record.labels(saved, level.name)} == here, level.name
+        for level in r.levels:  # 每個 level 都有預覽圖，跟重新 render 的一樣
+            with Image.open(preview_path(on_disk, level.name)) as image:
+                names = record.labels(saved, level.name)
+                expected = render_level(on_disk, level.name, labels=names)
+                assert image.tobytes() == expected.tobytes(), level.name
         before = _files(folder)
         result = actions.generate_scene(path)
         assert _files(folder) == before
@@ -67,7 +79,7 @@ edits = st.tuples(
 
 @pytest.mark.law("GEN-6")
 @FAST
-@given(placeable_village_rules(), edits, st.booleans())
+@given(fitting, edits, st.booleans())
 def test_gen_6_direct_edit_blocks_regeneration_until_forced(
     r: Rules, change: tuple[str, int, int], force_twice: bool
 ) -> None:
@@ -385,3 +397,70 @@ def test_example_broken_record_says_so(tmp_path: Path) -> None:
     record.record_path(path).write_text("{", encoding="utf-8")
     result = actions.render_level(path, "Village")
     assert "生成紀錄讀不了" in result.summary
+
+
+def _two_levels(tmp_path: Path) -> Path:
+    path = tmp_path / "village.ldtk"
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    record.rules_path(path).write_text(text[: text.index("[[portal]]")], encoding="utf-8")
+    actions.generate_scene(path)
+    return path
+
+
+def test_example_old_record_version_is_still_read(tmp_path: Path) -> None:
+    """2 版的生成紀錄照樣讀得懂：不必帶 force，摘要說這次不比位置；直接改過照樣擋。"""
+    path = _generated(tmp_path)
+    saved = record.read_record(path)
+    assert saved is not None
+    old = dict(saved, version=2)
+    old["labels"] = {"level": "Village", "names": saved["labels"]["Village"]}
+    defs = old["content"]["defs"]
+    defs["entities"] = [[n, w, h, len(fs)] for n, w, h, _, fs in defs["entities"]]
+    record.record_path(path).write_bytes(record.dump(old))
+    assert record.labels(record.read_record(path), "Village")
+    result = actions.generate_scene(path)
+    assert "舊格式" in result.summary
+    record.record_path(path).write_bytes(record.dump(old))
+    actions.paint_cells(path, "Village", cells=[(0, 0)], value=2)
+    with pytest.raises(SceneError, match="被直接改過"):
+        actions.generate_scene(path)
+
+
+def test_example_entity_def_color_edit_is_an_edit(tmp_path: Path) -> None:
+    """在 LDtk 改了規則宣告的 entity 類型的顏色：算直接改過，不默默蓋掉。"""
+    path = _two_levels(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    portal = next(d for d in data["defs"]["entities"] if d["identifier"] == "Portal")
+    portal["color"] = "#FF0000"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SceneError, match="entity 定義改了"):
+        actions.generate_scene(path)
+
+
+def test_example_summary_and_previews_cover_every_level(tmp_path: Path) -> None:
+    """多個 level：重新生成回傳每個 level 的預覽圖；新加的 level 在摘要裡另起一行。"""
+    path = tmp_path / "village.ldtk"
+    shutil.copy(EXAMPLE, record.rules_path(path))
+    actions.generate_scene(path)
+    text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
+    record.rules_path(path).write_text(text[: text.index("[[portal]]")], encoding="utf-8")
+    result = actions.generate_scene(path)  # 規則改了、地圖沒被直接改過：不必 force
+    assert "level 新的：House1" in result.summary
+    again = actions.generate_scene(path)
+    assert {p.stem for p in again.previews} == {"Village", "House1"}
+    assert "沒有元素移動" in again.summary
+
+
+def test_example_old_record_still_gets_names(tmp_path: Path) -> None:
+    """2 版紀錄、地圖沒被改過：預覽圖照樣寫元素名稱，不誤判成改過；壞掉的舊格式不當掉。"""
+    path = _generated(tmp_path)
+    saved = record.read_record(path)
+    assert saved is not None
+    old = dict(saved, version=2)
+    old["labels"] = {"level": "Village", "names": saved["labels"]["Village"]}
+    defs = old["content"]["defs"]
+    defs["entities"] = [[n, w, h, len(fs)] for n, w, h, _, fs in defs["entities"]]
+    record.record_path(path).write_bytes(record.dump(old))
+    result = actions.render_level(path, "Village")
+    assert "元素名稱" not in result.summary
+    assert record.labels(dict(old, labels={"level": ["Village"], "names": []}), "Village") == []
