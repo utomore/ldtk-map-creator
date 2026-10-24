@@ -227,10 +227,10 @@ def _check_values(
             problems.append(f"{level}/{layer} ({x},{y})：值 {value} 沒有宣告")
 
 
-def _check_slopes(
-    level: str, slope: list[int], height: list[int], width: int, problems: list[str]
-) -> None:
+def stranded_slopes(slope: list[int], height: list[int], width: int) -> list[tuple[int, int]]:
+    """斜坡格裡北東南西都沒有高一階的格，照列優先（先列後行）；慣例檢查與生成（D-012）共用。"""
     rows = len(slope) // width if width else 0
+    found: list[tuple[int, int]] = []
     for index, value in enumerate(slope):
         if value == 0:
             continue
@@ -243,4 +243,12 @@ def _check_slopes(
             for dx, dy in _NEIGHBOURS
         )
         if not higher:
-            problems.append(f"{level}/{convention.SLOPE} ({x},{y})：斜坡四周沒有高一階的格")
+            found.append((x, y))
+    return found
+
+
+def _check_slopes(
+    level: str, slope: list[int], height: list[int], width: int, problems: list[str]
+) -> None:
+    for x, y in stranded_slopes(slope, height, width):
+        problems.append(f"{level}/{convention.SLOPE} ({x},{y})：斜坡四周沒有高一階的格")

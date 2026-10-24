@@ -7,13 +7,14 @@ import random
 from pathlib import Path
 
 from . import convention, fields
-from .derived import refresh_derived
+from .check import stranded_slopes
+from .derived import cell_count, refresh_derived
 from .edit import add_entity_def, paint_cells, place_entity
 from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
 from .model import EntityInstance, IntGridValueDef, Level
-from .rules import EntityRule, Kind, LayerValue, Rules
+from .rules import Cell, EntityRule, Kind, LayerValue, Rules
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -79,6 +80,11 @@ def generate_scene(
         level = placed.level_of[element]
         for layer, value in _kind_values(kind, grounds, collisions):
             paint_cells(scene, level, cells=sorted(cells), value=value, layer=layer)
+    # 斜坡的每一格都要有高一階的鄰格（D-012）：畫完才查，這時還沒寫檔
+    sloped = [e for e in placed.cells if kinds[kind_of[e]].slope]
+    for level in dict.fromkeys(placed.level_of[e] for e in sloped):
+        here = {e: placed.cells[e] for e in sloped if placed.level_of[e] == level}
+        _check_slope_cells(scene, level, here)
     for entity in rules.entities:
         x, y = placed.entities[entity.name]
         iid = element_iid(rules.seed, entity.name)
@@ -110,6 +116,26 @@ def generate_scene(
             layer["seed"] = random.Random(f"{rules.seed}:{key}").randrange(10**6)
     refresh_derived(project)
     return scene, placed
+
+
+def _check_slope_cells(scene: SceneMap, level: str, sloped: dict[str, frozenset[Cell]]) -> None:
+    """一個 level 的斜坡元素：整層只掃一次，第一個不合格的格報它所屬的元素（D-012）。"""
+    defs = {d["uid"]: d for d in scene.project["defs"]["layers"]}
+    data = scene.level(level)
+    csvs = {
+        defs[ly["layerDefUid"]]["identifier"]: ly["intGridCsv"]
+        for ly in data["layerInstances"] or []
+    }
+    grids = {d["identifier"]: d["gridSize"] for d in defs.values()}
+    if grids[convention.SLOPE] != grids[convention.HEIGHT]:
+        # 格子大小不同就對不上格（範本兩層一樣大）
+        raise SceneError(f"範本的 {convention.SLOPE} 與 {convention.HEIGHT} 格子大小要一樣")
+    owner = {cell: e for e, cells in sloped.items() for cell in cells}
+    width = cell_count(data["pxWid"], grids[convention.SLOPE])
+    for x, y in stranded_slopes(csvs[convention.SLOPE], csvs[convention.HEIGHT], width):
+        element = owner.get((x, y))
+        if element is not None:
+            raise SceneError(f"{element}.kind：斜坡格 ({x},{y}) 四周沒有高一階的格（D-012）")
 
 
 def _layer_values(rules: Rules) -> dict[str, list[IntGridValueDef]]:

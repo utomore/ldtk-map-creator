@@ -11,6 +11,7 @@
 | 場景地圖 | 一個 LDtk 專案，代表一整個場景（例如村莊），裡面有多個 level；不是單一 `.ldtk` 檔 | `SceneMap` |
 | 規則檔 | 記下場景地圖生成規則與 seed 的檔案，用來重現生成結果；不是微調紀錄 | `Rules`、`core/rules.py` |
 | 元素 | 規則檔裡一個有名字的項目，對應地圖上的一塊東西：區域、路徑或 entity；不是 LDtk 的 entity 定義 | `AreaRule`、`PathRule`、`EntityRule` |
+| 不合格的斜坡 | `Slope` 層畫了的格，北東南西都沒有 `Height` 剛好高一階的格；引擎長不出斜面，生成會擋下、慣例檢查會報（D-012）；不是畫錯值 | `stranded_slopes`；測試裡的 `stranded_elements`、`qualified_slopes` |
 | 錨點 | 元素上可以讓別的元素指向的位置，例如 `main_road.end`；不是 entity 的 pivot | `AREA_ANCHORS`、`PATH_ANCHORS` |
 | 圖格種類 | 規則檔 `[kinds]` 裡一個有名字的項目，寫明元素畫進分層慣例的哪幾層、各是什麼值（D-011）；不是工作的種類 | `Kind` |
 | 地面種類 | 規則檔 `[grounds]` 裡一個有名字的 `Ground` 層的值與預覽顏色，遊戲對到材質；不是圖格種類 | `LayerValue`（`Rules.grounds`） |

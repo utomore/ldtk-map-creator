@@ -11,6 +11,7 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from ldtk_map_creator.core import template
+from ldtk_map_creator.core.check import check_scene
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
 from ldtk_map_creator.core.layout import Layout, layout, placement_order
@@ -37,6 +38,7 @@ from tests.rule_strategies import (
     placeable_multi_village_rules,
     placeable_village_rules,
     rules,
+    stranded_elements,
     village_rules,
 )
 
@@ -283,6 +285,28 @@ def test_gen_3_failure_names_an_element(r: Rules) -> None:
         head = str(error).split("：", 1)[0]
         element, _, field = head.partition(".")
         assert element in names and field in ("at", "near", "to"), str(error)
+
+
+@pytest.mark.law("GEN-3")
+@FAST
+@given(placeable_village_rules() | placeable_multi_village_rules())
+def test_gen_3_stranded_slope_is_refused_and_names_its_element(r: Rules) -> None:
+    """全部種類都改成斜坡：有哪個元素的斜坡格四周沒有高一階的格就擋下，沒有就生成成功。"""
+    sloped = dataclasses.replace(
+        r, kinds=tuple(dataclasses.replace(k, slope=True) for k in r.kinds)
+    )
+    stranded = stranded_elements(sloped)
+    assert stranded is not None
+    with tempfile.TemporaryDirectory() as tmp:
+        if not stranded:
+            scene, _ = generate_scene(sloped, Path(tmp) / "scene.ldtk")
+            assert check_scene(scene) == []  # 生成成功就照慣例（CONV-1 的同一條規則）
+            return
+        with pytest.raises(SceneError) as error:
+            generate_scene(sloped, Path(tmp) / "scene.ldtk")
+    element, _, rest = str(error.value).partition(".kind：斜坡格 (")
+    assert element in stranded
+    assert rest.endswith(") 四周沒有高一階的格（D-012）")
 
 
 @st.composite
@@ -883,6 +907,8 @@ def test_example_terrain_village() -> None:
         assert [at(n, cell) for n in ("Ground", "Collision", "Height", "Slope")] == [2, 1, 0, 0]
     for cell in placed.cells["pond"]:
         assert [at(n, cell) for n in ("Ground", "Collision", "Height", "Slope")] == [0, 2, 0, 0]
+    assert len(placed.cells["ramp"]) == 3  # 一格深，三格都貼著小丘
+    assert check_scene(scene) == []
     painted: set[tuple[int, int]] = set()
     for cells in placed.cells.values():
         painted |= cells
@@ -890,3 +916,21 @@ def test_example_terrain_village() -> None:
         for index, value in enumerate(csv):
             cell = (index % width, index // width)
             assert cell in painted or value == 0, (name, cell)
+
+
+def test_example_wide_ramp_has_stranded_cells() -> None:
+    """曾經壞過的地方（D-012）：斜坡兩格深，第二排貼不到小丘，從第一個不合格的格擋下。"""
+    r = load_rules(EXAMPLE.with_name("village_terrain.rules.toml"))
+    wide = dataclasses.replace(
+        r,
+        areas=tuple(
+            dataclasses.replace(a, size=(3, 2)) if a.name == "ramp" else a for a in r.areas
+        ),
+    )
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        pytest.raises(
+            SceneError, match=r"^ramp\.kind：斜坡格 \(\d+,\d+\) 四周沒有高一階的格（D-012）$"
+        ),
+    ):
+        generate_scene(wide, Path(tmp) / "scene.ldtk")

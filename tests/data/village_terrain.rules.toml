@@ -1,4 +1,4 @@
-# 範例規則檔：村莊的地形（D-011）。廣場鋪泥土、房子實心、小丘兩階、小丘南邊一段斜坡。
+# 範例規則檔：村莊的地形（D-011）。廣場鋪泥土、房子實心、小丘兩階、小丘南邊一段一格深的斜坡。
 seed = 11
 
 [level]
@@ -37,17 +37,13 @@ side = "north"
 name = "hill"
 kind = "hill"
 size = [7, 5]
-near = "plaza"
-side = "west"
-gap = 3
+at = [6, 13]
 
 [[area]]
 name = "ramp"
 kind = "ramp"
-size = [3, 2]
-near = "hill"
-side = "south"
-gap = 0
+size = [3, 1]  # 斜坡只能一格深，三格都貼著小丘（D-012）；用 at 固定，免得靠近時錯開一截
+at = [6, 18]
 
 [[area]]
 name = "pond"
