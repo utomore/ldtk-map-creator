@@ -14,9 +14,15 @@ from hypothesis import strategies as st
 from PIL import Image
 
 from ldtk_map_creator.core import actions, record
+from ldtk_map_creator.core import render as rendering
 from ldtk_map_creator.core.edit import read_cell
 from ldtk_map_creator.core.errors import SceneError
-from ldtk_map_creator.core.render import preview_path, render_level
+from ldtk_map_creator.core.render import (
+    preview_path,
+    render_level,
+    render_world,
+    world_preview_path,
+)
 from ldtk_map_creator.core.rules import Rules
 from ldtk_map_creator.core.scene import load_scene
 from tests.rule_strategies import (
@@ -58,6 +64,9 @@ def test_gen_5_record_matches_disk_and_regenerating_is_a_no_op(r: Rules) -> None
             # 每個 level 的名稱剛好是那個 level 的區域與路徑（不靠紀錄自己對答案）
             here = {e.name for e in (*r.areas, *r.paths) if r.level_of(e).name == level.name}
             assert {n for n, _, _ in record.labels(saved, level.name)} == here, level.name
+        # 世界總覽也跟重新 render 的一樣（SCENE-5）
+        with Image.open(world_preview_path(on_disk)) as image:
+            assert image.tobytes() == render_world(on_disk).tobytes()
         for level in r.levels:  # 每個 level 都有預覽圖，跟重新 render 的一樣
             with Image.open(preview_path(on_disk, level.name)) as image:
                 names = record.labels(saved, level.name)
@@ -447,7 +456,7 @@ def test_example_summary_and_previews_cover_every_level(tmp_path: Path) -> None:
     result = actions.generate_scene(path)  # 規則改了、地圖沒被直接改過：不必 force
     assert "level 新的：House1" in result.summary
     again = actions.generate_scene(path)
-    assert {p.stem for p in again.previews} == {"Village", "House1"}
+    assert {p.stem for p in again.previews} == {"Village", "House1", "world-overview"}
     assert "沒有元素移動" in again.summary
 
 
@@ -488,3 +497,42 @@ def test_example_portal_type_change_is_listed(tmp_path: Path) -> None:
     record.record_path(path).write_bytes(record.dump(old))
     again = actions.generate_scene(path)
     assert "house_1_door" not in again.summary
+
+
+def test_example_overview_returned_only_when_world_changes(tmp_path: Path) -> None:
+    """多個 level 時：畫一格不回傳總覽（level 預覽圖就夠了），加 level 才回傳；總覽照樣寫最新的。"""
+    path = tmp_path / "scene.ldtk"
+    actions.create_scene(path)
+    actions.add_level(path, "Inn", width_cells=4, height_cells=4, world_x=1024)
+    painted = actions.paint_cells(path, "Inn", cells=[(0, 0)], value=1)
+    assert all(p.stem != "world-overview" for p in painted.previews)
+    with Image.open(world_preview_path(load_scene(path))) as image:
+        assert image.tobytes() == render_world(load_scene(path)).tobytes()
+    added = actions.add_level(path, "Cellar", width_cells=2, height_cells=2, world_x=2048)
+    assert any(p.stem == "world-overview" for p in added.previews)
+
+
+def test_example_overview_follows_removed_level(tmp_path: Path) -> None:
+    """多加的 level 在重新生成時拿掉：剩下的 level 沒變，總覽也要重畫，不留那個 level。"""
+    path = _two_levels(tmp_path)
+    actions.add_level(path, "Extra", width_cells=2, height_cells=2, world_x=4096)
+    actions.generate_scene(path, force=True)
+    with Image.open(world_preview_path(load_scene(path))) as image:
+        assert image.tobytes() == render_world(load_scene(path)).tobytes()
+
+
+def test_example_broken_overview_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """世界總覽畫不出來：編輯照做，舊的總覽刪掉（不留過期的圖），摘要說一聲。"""
+    path = _two_levels(tmp_path)
+    overview = world_preview_path(load_scene(path))
+    assert overview.is_file()
+
+    def broken(scene: object) -> object:
+        raise SceneError("故意壞掉")
+
+    monkeypatch.setattr(rendering, "render_world", broken)
+    result = actions.paint_cells(path, "Village", cells=[(0, 0)], value=1)
+    assert "世界總覽畫不出來" in result.summary
+    assert not overview.exists()

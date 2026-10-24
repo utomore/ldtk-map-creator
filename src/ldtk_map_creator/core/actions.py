@@ -23,6 +23,7 @@ from . import render as rendering
 from .derived import cell_count, refresh_derived
 from .errors import SceneError
 from .files import atomic_write
+from .model import Project
 from .rules import Rules, load_rules
 from .scene import SceneMap
 
@@ -130,10 +131,29 @@ def _commit(
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names}
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
     touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | remove
+    # 世界總覽（D-002）：重新生成、有 level 變了、level 的組成或位置變了、或還沒畫過才重畫
+    world_path = rendering.world_preview_path(target)
+    world, note = None, ""
+    world_moved = _world_changed(before, target.project)
+    redraw_world = generated is not None or bool(changed) or world_moved
+    if levels and (redraw_world or not world_path.is_file()):
+        try:
+            world = rendering.render_world(target)
+        except SceneError as error:
+            # 總覽出錯不擋編輯；舊的總覽刪掉，磁碟上不留過期的圖
+            note = f"\n（世界總覽畫不出來：{error}）"
+            remove = remove | {world_path}
+    summary += note
+    touched.add(world_path)
     saved = _snapshot(touched)
     try:
         scene.save_scene(target, levels=set(changed), refreshed=True)
         previews = tuple(rendering.write_preview(target, lv, image) for lv, image in images.items())
+        if world is not None:
+            overview = rendering.write_world_preview(target, world)
+            # 只有 level 的組成或世界佈局變了（或重新生成）才回傳，小改動不多塞一張大圖
+            if len(levels) > 1 and (generated is not None or world_moved):
+                previews += (overview,)
         for path, data in extra.items():
             atomic_write(path, data)
         for old in remove:
@@ -142,6 +162,24 @@ def _commit(
         _restore(saved)
         raise
     return ActionResult(summary, previews, iid)
+
+
+def _world_changed(before: dict[str, object] | None, project: Project) -> bool:
+    """level 的組成、順序、世界座標或大小跟操作前不同。
+
+    照順序比：線性排法的位置只由順序決定。排法（worldLayout）只會在 LDtk 裡改，操作不會動它。
+    """
+    if before is None:
+        return True
+
+    def shape(level: object) -> tuple[object, ...]:
+        found = cast(dict[str, object], level)
+        keys = ("identifier", "worldX", "worldY", "pxWid", "pxHei")
+        return tuple(found.get(k) for k in keys)
+
+    # before 照操作前的 level 順序（dict 保留插入順序）
+    old = [shape(lv) for lv in before.values()]
+    return old != [shape(lv) for lv in project["levels"]]
 
 
 def _apply(path: Path, change: Callable[[SceneMap], tuple[str, str, str | None]]) -> ActionResult:
