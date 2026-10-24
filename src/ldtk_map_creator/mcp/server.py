@@ -20,7 +20,7 @@ server = MCPServer(
         "生成並微調 LDtk 場景地圖。path 是場景地圖的 .ldtk 主檔路徑；座標以格為單位，"
         "原點在 level 左上角。先用 describe_scene 看有哪些 level、圖層、IntGrid 值與 entity。"
         "圖層照分層慣例（D-011）：Entities、Collision、Slope、Height、Ground；"
-        "畫格要用 layer 指定層。"
+        "畫格要用 layer 指定層；改完可以用 check_scene 確認照分層慣例。"
         "會改動地圖的工具都會回傳預覽圖。"
         "有 <名>.rules.toml 的場景地圖是從規則生成的：微調改規則檔，再呼叫 generate_scene。"
     ),
@@ -48,6 +48,12 @@ def create_scene(path: str, split: bool = True) -> Reply:
 def describe_scene(path: str) -> Reply:
     """列出場景地圖的 level、圖層、IntGrid 值、entity 定義與每個 entity 的位置與 iid。"""
     return _reply(lambda: actions.describe_scene(Path(path)))
+
+
+@server.tool()
+def check_scene(path: str) -> Reply:
+    """檢查場景地圖照不照分層慣例（D-011），列出每一處不照的地方；唯讀，不改動場景地圖。"""
+    return _reply(lambda: actions.check_scene(Path(path)))
 
 
 @server.tool()

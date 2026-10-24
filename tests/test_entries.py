@@ -81,5 +81,5 @@ def test_example_cli_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert main(["paint_cells", path, "Level_0", "1", "0,0", "1,0", "--layer", "Collision"]) == 0
     assert main(["describe_scene", path]) == 0
     assert "Level_0：16x16 格" in capsys.readouterr().out
-    assert main(["place_entity", path, "Level_0", "Nope", "0", "0"]) == 1
+    assert main(["place_entity", path, "Level_0", "Nope", "0", "0"]) == 2
     assert "沒有叫 Nope 的 entity 定義" in capsys.readouterr().err

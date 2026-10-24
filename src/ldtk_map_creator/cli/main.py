@@ -45,6 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     p = command("create_scene", "建一個新的場景地圖")
     p.add_argument("--single", action="store_true", help="存成單檔（預設拆開存）")
     command("describe_scene", "列出 level、圖層、entity")
+    command("check_scene", "檢查照不照分層慣例，有問題時結束碼是 1")
     p = command("add_level", "新增一個空的 level")
     p.add_argument("identifier")
     p.add_argument("width_cells", type=int)
@@ -101,6 +102,7 @@ def _parser() -> argparse.ArgumentParser:
 COMMANDS: dict[str, Callable[[argparse.Namespace], ActionResult]] = {
     "create_scene": lambda a: actions.create_scene(a.path, split=not a.single),
     "describe_scene": lambda a: actions.describe_scene(a.path),
+    "check_scene": lambda a: actions.check_scene(a.path),
     "add_level": lambda a: actions.add_level(
         a.path,
         a.identifier,
@@ -140,11 +142,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = COMMANDS[args.command](args)
     except SceneError as error:
         print(f"錯誤：{error}", file=sys.stderr)
-        return 1
+        return 2  # 做不了（讀不了、參數錯）；1 留給 check_scene 查到不照慣例
     print(result.summary)
     for preview in result.previews:
         print(f"預覽圖：{preview}")
-    return 0
+    return 0 if result.ok else 1
 
 
 if __name__ == "__main__":
