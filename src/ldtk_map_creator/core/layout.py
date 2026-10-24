@@ -48,8 +48,10 @@ class Layout:
     pushed_by: dict[str, frozenset[str]]
     # 每個 level 在世界上的位置與大小（格），照規則檔的順序
     levels: dict[str, Rect]
-    # 每個元素（區域、路徑、entity）在哪個 level
+    # 每個區域、路徑、entity 在哪個 level（傳送點兩端各在哪裡見 portals）
     level_of: dict[str, str]
+    # 每個傳送點兩端各在哪個 level、哪一格：（from 那端, to 那端）
+    portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]]
 
 
 def placement_order(rules: Rules) -> tuple[Placeable, ...]:
@@ -103,24 +105,41 @@ def layout(rules: Rules) -> Layout:
         cells |= grid.cells
 
     taken: dict[tuple[str, Cell], str] = {}
+
+    def spot_of(label: str, at: str | Cell, level: str | None) -> tuple[str, Cell]:
+        """錨點（或固定的格）換成（level, 格），並佔下那一格。
+
+        `level` 是 entity 所在的 level：錨點要在同一個 level；傳送點給 None，兩端可以跨 level。
+        """
+        if isinstance(at, tuple):
+            assert level is not None
+            spot = (level, at)
+        elif at in anchors:
+            owner = level_of[at.split(".", 1)[0]]
+            if level is not None and owner != level:  # 讀規則檔時擋過；直接組出來的照樣擋
+                raise SceneError(f"{label}：{at} 在 level {owner}，不在 {level}")
+            spot = (owner, anchors[at])
+        else:
+            raise SceneError(f"{label}：沒有錨點 {at}")
+        if spot in taken:
+            raise SceneError(f"{label}：跟 {taken[spot]} 擺在同一格 {spot[1]}")
+        taken[spot] = label.removesuffix(".at")
+        return spot
+
     for entity in rules.entities:
         level = rules.level_of(entity).name
-        if isinstance(entity.at, tuple):
-            cell = entity.at
-        elif entity.at in anchors:
-            owner = level_of[entity.at.split(".", 1)[0]]
-            if owner != level:  # 讀規則檔時擋過；直接組出來的規則照樣報成 SceneError
-                raise SceneError(f"{entity.name}.at：{entity.at} 在 level {owner}，不在 {level}")
-            cell = anchors[entity.at]
-        else:
-            raise SceneError(f"{entity.name}.at：沒有錨點 {entity.at}")
-        if (level, cell) in taken:
-            raise SceneError(f"{entity.name}.at：跟 {taken[(level, cell)]} 擺在同一格 {cell}")
-        taken[(level, cell)] = entity.name
+        _, cell = spot_of(f"{entity.name}.at", entity.at, level)
         entities[entity.name] = cell
         pushed_by[entity.name] = frozenset()
         level_of[entity.name] = level
-    return Layout(cells, anchors, entities, pushed_by, levels, level_of)
+
+    # 傳送點（D-010）：兩端各一個 entity，不能落在同一格，也不跟別的 entity 擠在同一格
+    portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]] = {}
+    for portal in rules.portals:
+        start = spot_of(f"{portal.name}.from", portal.start, None)
+        end = spot_of(f"{portal.name}.to", portal.to, None)
+        portals[portal.name] = (start, end)
+    return Layout(cells, anchors, entities, pushed_by, levels, level_of, portals)
 
 
 def place_levels(rules: Rules) -> dict[str, Rect]:

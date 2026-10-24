@@ -265,11 +265,18 @@ def _without(r: Rules, name: str) -> Rules:
         for e in r.entities
         if e.name not in gone and not (isinstance(e.at, str) and e.at.split(".")[0] in gone)
     ]
+    # 傳送點：點名的就是它，或兩端有一端的錨點在拿掉的元素上
+    keep_portal = [
+        p
+        for p in r.portals
+        if p.name not in gone and not {p.start.split(".")[0], p.to.split(".")[0]} & gone
+    ]
     return replace(
         r,
         areas=tuple(a for a in r.areas if a.name not in gone),
         paths=tuple(p for p in r.paths if p.name not in gone),
         entities=tuple(keep_entity),
+        portals=tuple(keep_portal),
     )
 
 
@@ -462,7 +469,7 @@ def _prefixed(r: Rules, prefix: str, level: str) -> Rules:
 
 
 @st.composite
-def multi_village_rules(draw: st.DrawFn) -> Rules:
+def multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     """2～3 個 level，每個 level 一套像村莊的元素；第二個以後的 level 靠近前一個或固定在格位上。
 
     有時再宣告一種 entity 類型，把一些 Spawn 換成它。
@@ -488,27 +495,40 @@ def multi_village_rules(draw: st.DrawFn) -> Rules:
             used.append(slot)
             levels.append(LevelRule(name, size, at=slot))
     moved = [_prefixed(part, f"l{i}_", f"L{i}") for i, part in enumerate(parts)]
-    types: tuple[EntityType, ...] = ()
+    types: list[EntityType] = []
     entities = [e for part in moved for e in part.entities]
     if draw(st.booleans()):
-        types = (EntityType("Sign", "#FFFFFF", (16, 16), (("label", "String"),)),)
+        types.append(EntityType("Sign", "#FFFFFF", (16, 16), (("label", "String"),)))
         entities = [replace(e, type="Sign") if draw(st.booleans()) else e for e in entities]
+    # 傳送點（D-010）：兩個錨點，跨 level 或同一個 level 都有，區域與路徑的錨點都用
+    areas = tuple(a for part in moved for a in part.areas)
+    paths = tuple(p for part in moved for p in part.paths)
+    anchors = [f"{a.name}.{s}" for a in areas for s in AREA_ANCHORS]
+    anchors += [f"{p.name}.{s}" for p in paths for s in PATH_ANCHORS]
+    portals: list[PortalRule] = []
+    if len(anchors) >= 2:
+        types.append(EntityType("Portal", "#4FC3F7", (16, 16), (("target", "EntityRef"),)))
+        for i in range(draw(st.integers(min_portals, 2))):
+            start, to = draw(
+                st.lists(st.sampled_from(anchors), min_size=2, max_size=2, unique=True)
+            )
+            portals.append(PortalRule(f"door{i}", "Portal", start, to))
     return Rules(
         parts[0].seed,
         tuple(levels),
         parts[0].kinds,
-        tuple(a for part in moved for a in part.areas),
-        tuple(p for part in moved for p in part.paths),
+        areas,
+        paths,
         tuple(entities),
-        types,
-        (),
+        tuple(types),
+        tuple(portals),
     )
 
 
 @st.composite
-def placeable_multi_village_rules(draw: st.DrawFn) -> Rules:
+def placeable_multi_village_rules(draw: st.DrawFn, *, min_portals: int = 0) -> Rules:
     """排得下的多 level 規則：排不下就拿掉出錯的元素再試（見 placeable_village_rules）。"""
-    r = draw(multi_village_rules())
+    r = draw(multi_village_rules(min_portals=min_portals))
     while True:
         try:
             layout(r)
