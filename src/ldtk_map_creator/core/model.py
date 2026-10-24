@@ -170,6 +170,10 @@ class Project(TypedDict):
     defaultGridSize: int
     worldGridWidth: int
     worldGridHeight: int
+    defaultLevelWidth: int
+    defaultLevelHeight: int
+    defaultEntityWidth: int
+    defaultEntityHeight: int
     defaultLevelBgColor: str
     externalLevels: bool
     dummyWorldIid: str

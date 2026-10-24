@@ -75,6 +75,10 @@ def _set_grid(project: Project, grid: int) -> None:
     """
     project["defaultGridSize"] = grid
     project["worldGridWidth"] = project["worldGridHeight"] = grid * 16
+    project["defaultLevelWidth"] = project["defaultLevelHeight"] = (
+        grid * 16
+    )  # LDtk 新增 level 的大小
+    project["defaultEntityWidth"] = project["defaultEntityHeight"] = grid  # 新增 entity 定義的大小
     for ldef in project["defs"]["layers"]:
         ldef["gridSize"] = grid
     for edef in project["defs"]["entities"]:

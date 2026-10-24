@@ -30,7 +30,7 @@ PATH_ANCHORS = ("start", "end")
 DEFAULT_GAP = 2
 DEFAULT_ENTITY_COLOR = "#BE4A2F"
 DEFAULT_GRID = 16
-DEFAULT_ENTITY_SIZE = (DEFAULT_GRID, DEFAULT_GRID)
+MAX_GRID = 1024  # 再大的格子，level 的像素大到畫不出預覽圖
 
 
 @dataclass(frozen=True)
@@ -117,8 +117,8 @@ class EntityType:
     """規則檔宣告的 entity 類型（D-010）：顏色、大小（像素）、欄位（名稱 → 型別）、tags。"""
 
     name: str
-    color: str = DEFAULT_ENTITY_COLOR
-    size: Cell = DEFAULT_ENTITY_SIZE
+    color: str
+    size: Cell  # 像素；規則檔沒寫就是一格大（grid×grid），由讀規則檔的地方填
     fields: tuple[tuple[str, str], ...] = ()
     tags: tuple[str, ...] = ()
 
@@ -193,7 +193,7 @@ def parse_rules(data: dict[str, Any]) -> Rules:
     }
     _keys(data, "規則檔", required={"seed", "level"}, optional=optional)
     seed = _int(data["seed"], "seed")
-    grid = _int(data.get("grid", DEFAULT_GRID), "grid", minimum=1)
+    grid = _int(data.get("grid", DEFAULT_GRID), "grid", minimum=1, maximum=MAX_GRID)
     levels = _levels(data["level"])
     grounds = _layer_values(data.get("grounds", {}), "grounds")
     collisions = _layer_values(data.get("collisions", {}), "collisions")
@@ -816,12 +816,16 @@ def _name(value: object, where: str) -> str:
     return text
 
 
-def _int(value: object, where: str, *, minimum: int | None = None) -> int:
+def _int(
+    value: object, where: str, *, minimum: int | None = None, maximum: int | None = None
+) -> int:
     # bool 是 int 的子類別，要先排除
     if isinstance(value, bool) or not isinstance(value, int):
         raise SceneError(f"{where}：要是整數：{value!r}")
     if minimum is not None and value < minimum:
         raise SceneError(f"{where}：至少是 {minimum}：{value}")
+    if maximum is not None and value > maximum:
+        raise SceneError(f"{where}：至多是 {maximum}：{value}")
     return value
 
 

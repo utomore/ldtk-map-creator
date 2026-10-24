@@ -90,8 +90,10 @@ def broken(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             data["level"]["size"][draw(st.integers(0, 1))] = draw(st.integers(-3, 0))
             return data, "level.size"
         case "bad_grid":
-            # grid 要是正整數：0、負數、小數、字串、布林都擋下來
-            data["grid"] = draw(st.sampled_from([0, -1, -96, 1.5, 96.0, "96", True, False, []]))
+            # grid 要是 1 到 1024 的整數：0、負數、小數、字串、布林、超過上限都擋下來
+            data["grid"] = draw(
+                st.sampled_from([0, -1, -96, 1.5, 96.0, "96", True, False, [], 1025])
+            )
             return data, "grid"
         case "bad_seed":
             data["seed"] = draw(st.sampled_from(BAD_VALUES))

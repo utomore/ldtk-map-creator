@@ -448,6 +448,9 @@ def test_gen_9_grid_sets_every_pixel_size(r: Rules, grid: int, split: bool) -> N
     assert check_scene(loaded) == []
     project = loaded.project
     assert project["defaultGridSize"] == grid
+    # LDtk 編輯器裡新增的 level 是 16 格見方、新增的 entity 定義是一格大
+    assert (project["defaultLevelWidth"], project["defaultLevelHeight"]) == (grid * 16, grid * 16)
+    assert (project["defaultEntityWidth"], project["defaultEntityHeight"]) == (grid, grid)
     assert [d["gridSize"] for d in project["defs"]["layers"]] == [grid] * 5
     declared = {t.name: t.size for t in r.entity_types}
     for edef in project["defs"]["entities"]:  # 範本三種是一格大；宣告的照 size（像素）
@@ -770,7 +773,7 @@ def test_example_single_level_at_sets_world_position(tmp_path: Path) -> None:
 def test_example_layout_ignores_declared_types() -> None:
     """配置器只算位置：宣告了 entity 類型照樣排得出來（不支援的生成在 generate_scene 擋）。"""
     r = load_rules(EXAMPLE)
-    r = dataclasses.replace(r, entity_types=(EntityType("Sign"),))
+    r = dataclasses.replace(r, entity_types=(EntityType("Sign", "#BE4A2F", (16, 16)),))
     assert layout(r).cells
 
 
@@ -822,7 +825,9 @@ def test_example_other_levels_stay_when_one_changes() -> None:
 
 def test_example_entity_type_errors_name_the_type(tmp_path: Path) -> None:
     """直接組出來、沒經過規則檔檢查的 entity 類型寫錯：訊息開頭是 entity_types.<名稱>。"""
-    r = dataclasses.replace(load_rules(EXAMPLE), entity_types=(EntityType("PlayerSpawn"),))
+    r = dataclasses.replace(
+        load_rules(EXAMPLE), entity_types=(EntityType("PlayerSpawn", "#BE4A2F", (16, 16)),)
+    )
     with pytest.raises(SceneError, match=r"^entity_types\.PlayerSpawn："):
         generate_scene(r, tmp_path / "scene.ldtk")
 
