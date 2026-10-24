@@ -539,12 +539,28 @@ def _override(name: str, table: dict[str, Any], where: str) -> ConventionOverrid
     if not table:
         raise SceneError(f"{where}：要寫 color 或 tags，{name} 是分層慣例的 entity")
     color = _str(table["color"], f"{where}.color") if "color" in table else None
-    if color is not None and not _COLOR.fullmatch(color):
-        raise SceneError(f'{where}.color：要是 "#RRGGBB"：{color!r}')
     tags = _tags(table["tags"], f"{where}.tags") if "tags" in table else None
-    if name == convention.PLAYER_SPAWN and tags is not None and convention.PLAYER_TAG not in tags:
-        raise SceneError(f"{where}.tags：{name} 的 tags 要有 {convention.PLAYER_TAG}（D-011）")
-    return ConventionOverride(name, color, tags)
+    override = ConventionOverride(name, color, tags)
+    check_override(override, where)
+    return override
+
+
+def check_override(override: ConventionOverride, where: str) -> None:
+    """慣例 entity 的覆寫要合法：顏色是 #RRGGBB、tags 不空白不重複、PlayerSpawn 的 tags 有 player。
+
+    讀規則檔時查，生成時也查（直接組出來、沒經過規則檔檢查的規則）。`where` 是訊息開頭。
+    """
+    if override.color is None and override.tags is None:
+        raise SceneError(f"{where}：要寫 color 或 tags，{override.name} 是分層慣例的 entity")
+    if override.color is not None and not _COLOR.fullmatch(override.color):
+        raise SceneError(f'{where}.color：要是 "#RRGGBB"：{override.color!r}')
+    if override.tags is None:
+        return
+    _tags(list(override.tags), f"{where}.tags")
+    if override.name == convention.PLAYER_SPAWN and convention.PLAYER_TAG not in override.tags:
+        raise SceneError(
+            f"{where}.tags：{override.name} 的 tags 要有 {convention.PLAYER_TAG}（D-011）"
+        )
 
 
 def _layer_values(raw: object, section: str) -> tuple[LayerValue, ...]:
@@ -740,7 +756,7 @@ def _check_links(rules: Rules) -> None:
 def entity_size(rules: Rules, entity: EntityRule) -> Cell | None:
     """entity 實例的大小（像素）：`size`（格）乘以格子大小，沒寫就是類型定義的大小。
 
-    類型不存在（直接組出來的規則）回 None：大小不知道，生成時才會因為類型不存在報錯。
+    類型不存在（沒宣告、也不是範本的三種）回 None：大小不知道，生成時才會因為類型不存在報錯。
     """
     if entity.size is not None:
         return entity.size[0] * rules.grid, entity.size[1] * rules.grid
@@ -759,6 +775,13 @@ def check_entity_rect(rules: Rules, entity: EntityRule, cell: Cell) -> None:
     """
     size = entity_size(rules, entity)
     width, height = rules.level_of(entity).size
+    # 讀規則檔時已經擋過；直接組出來的規則也不能悄悄生成出錯的位置
+    if any(not 0 <= o < rules.grid for o in entity.offset):
+        raise SceneError(
+            f"{entity.name}.offset：要小於格子大小 {rules.grid}：{list(entity.offset)}"
+        )
+    if entity.size is not None and min(entity.size) < 1:
+        raise SceneError(f"{entity.name}.size：至少是 1：{list(entity.size)}")
     if size is None:  # 類型的大小不知道：至少左上角那一格要在 level 內
         if cell[0] >= width or cell[1] >= height:
             raise SceneError(f"{entity.name}.at：{cell} 超出 level 的 {width}x{height}")
@@ -786,6 +809,10 @@ def check_fixed_end(rules: Rules, where: str, end: FixedEnd) -> None:
     level = rules.end_level(end, where)
     width, height = level.size
     (x, y), (w, h) = end.at, end.size
+    if min(end.at) < 0:
+        raise SceneError(f"{where}.at：不能是負的：{list(end.at)}")
+    if min(end.size) < 1:
+        raise SceneError(f"{where}.size：至少是 1：{list(end.size)}")
     if w > width or h > height:
         raise SceneError(f"{where}.size：{w}x{h} 比 level 的 {width}x{height} 大")
     if x + w > width or y + h > height:

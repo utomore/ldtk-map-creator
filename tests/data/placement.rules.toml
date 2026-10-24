@@ -26,6 +26,7 @@ plot = { ground = "dirt", collision = "wall" }
 [entity_types]
 Teleport = { color = "#30e1b9", tags = ["tele"] }
 House = { color = "#b33831", size = [384, 288] } # 像素：預設 4×3 格
+Scout = { color = "#f9c22b", size = [8, 8], tags = ["player"] } # 像素：比一格小的類型
 
 [[area]]
 name = "home_floor"
@@ -47,6 +48,14 @@ name = "spawn"
 type = "PlayerSpawn"
 level = "Home"
 at = [4, 3]
+offset = [48, 72]
+
+# 比一格小的實例：宣告一個像素大小的類型，再用 offset 擺進那一格
+[[entity]]
+name = "scout"
+type = "Scout"
+level = "Home"
+at = [6, 5]
 offset = [48, 72]
 
 # 沒寫 size 的房子是類型的大小（4×3 格）；size（格）逐個指定

@@ -14,7 +14,7 @@ from .errors import SceneError
 from .ids import derived_iid
 from .layout import Layout, layout
 from .model import EntityInstance, IntGridValueDef, Level, Project
-from .rules import Cell, ConventionOverride, EntityRule, Kind, LayerValue, Rules
+from .rules import Cell, ConventionOverride, EntityRule, Kind, LayerValue, Rules, check_override
 from .scene import SceneMap, add_level, new_scene
 
 
@@ -146,6 +146,7 @@ def generate_scene(
 def _apply_overrides(project: Project, overrides: tuple[ConventionOverride, ...]) -> None:
     """規則檔覆寫的分層慣例 entity：改定義的顏色與 tags，沒寫的維持範本的值（D-014）。"""
     for override in overrides:
+        check_override(override, f"entity_types.{override.name}")
         edef = next(
             (d for d in project["defs"]["entities"] if d["identifier"] == override.name), None
         )

@@ -34,6 +34,7 @@ size = [3, 3]                                     # 這一間 3×3 格
 
 - 實例要擺在格子裡的某個位置，不是左上角：寫 `offset = [x, y]`（像素，各在 0 到 `grid` - 1）。
 - `px` 是那一格的左上角加 `offset`；位移小於一格，所以實例還在那一格。
+- 實例比一格小（例如 8×8 像素）：`size` 最小是一格，要宣告一個 `[entity_types]` 類型寫像素大小，再用 `offset` 擺。
 
 ```toml
 [[entity]]
@@ -41,6 +42,9 @@ name = "spawn"
 type = "PlayerSpawn"
 at = [4, 3]
 offset = [48, 72]   # (4, 3) 那一格往右 48、往下 72：grid = 96 時 px 是 (432, 360)
+
+[entity_types]
+Scout = { color = "#f9c22b", size = [8, 8], tags = ["player"] }  # 像素：8×8，比一格小
 ```
 
 ## 整個矩形要在 level 內
@@ -60,7 +64,7 @@ offset = [48, 72]   # (4, 3) 那一格往右 48、往下 72：grid = 96 時 px �
 ```toml
 [[portal]]
 name = "home_door"
-from = { level = "Home", at = [0, 3], size = [1, 3] }   # 1×3 的傳送帶
+from = { level = "Home", at = [0, 3], size = [1, 3] }   # 1×3 的出口
 to = { level = "Farm", at = [0, 10], size = [1, 3] }
 ```
 

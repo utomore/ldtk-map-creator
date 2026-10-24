@@ -984,12 +984,14 @@ def placement_rules(draw: st.DrawFn) -> Rules:
     portals: list[PortalRule] = []
     for i in range(draw(st.integers(0, 2))):
         ends: list[str | FixedEnd] = []
+        claimed: list[tuple[str, set[tuple[int, int]]]] = []
         for _ in range(2):
             lv = draw(st.sampled_from(levels))
-            free = [(a, c) for a, c in anchors[lv.name] if c not in taken[lv.name]]
+            held = {c for n, cells in claimed if n == lv.name for c in cells}
+            free = [(a, c) for a, c in anchors[lv.name] if c not in taken[lv.name] | held]
             if free and draw(st.booleans()):
                 at, cell = draw(st.sampled_from(free))
-                taken[lv.name].add(cell)
+                claimed.append((lv.name, {cell}))
                 ends.append(at)
                 continue
             size = (
@@ -999,11 +1001,13 @@ def placement_rules(draw: st.DrawFn) -> Rules:
             x = draw(st.integers(0, lv.size[0] - size[0]))
             y = draw(st.integers(0, lv.size[1] - size[1]))
             cells = {(cx, cy) for cx in range(x, x + size[0]) for cy in range(y, y + size[1])}
-            if cells & taken[lv.name]:
+            if cells & (taken[lv.name] | held):
                 break
-            taken[lv.name] |= cells
+            claimed.append((lv.name, cells))
             ends.append(FixedEnd(written(lv.name), (x, y), size))
         if len(ends) == 2:
+            for name, cells in claimed:  # 兩端都放得下才算數
+                taken[name] |= cells
             portals.append(PortalRule(f"p{i}", ends[0], ends[1]))
 
     return Rules(

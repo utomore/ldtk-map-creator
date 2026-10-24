@@ -599,6 +599,10 @@ def _storage(path: Path) -> tuple[bool, list[str]]:
     st.sampled_from(["fresh", "split", "single", "main_deleted"]),
 )
 def test_gen_13_split_in_rules_decides_storage(r: Rules, wanted: bool | None, disk: str) -> None:
+    """GEN-13 的一條：規則檔的 split、磁碟上原本的存法、主檔在不在，每種組合生成之後的存法。
+
+    拆成兩條測試：這條走操作（讀磁碟、重新生成、不變），另一條只比兩種存法的內容。
+    """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "village.ldtk"
         rules_file = record.rules_path(path)
@@ -627,6 +631,7 @@ def test_gen_13_split_in_rules_decides_storage(r: Rules, wanted: bool | None, di
 @settings(max_examples=15, deadline=None)
 @given(placement_rules())
 def test_gen_13_both_storages_hold_the_same_content(r: Rules) -> None:
+    """GEN-13 的另一條：同一份規則存成拆開與單檔，讀回來的內容除了 externalLevels 都一樣。"""
     contents: list[dict[str, Any]] = []
     for split in (True, False):
         with tempfile.TemporaryDirectory() as tmp:
@@ -729,3 +734,65 @@ def test_example_nudging_an_entity_in_ldtk_is_an_edit(tmp_path: Path) -> None:
     save_scene(target)
     with pytest.raises(SceneError, match="被直接改過"):
         actions.generate_scene(path)
+
+
+def test_example_failed_conversion_to_split_removes_the_new_level_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """曾經沒保護的地方：單檔改成拆開存時，中途寫失敗要把新寫的 .ldtkl 與子資料夾都收掉。"""
+    path = tmp_path / "placement.ldtk"
+    text = PLACEMENT.read_text(encoding="utf-8")
+    rules_file = record.rules_path(path)
+    rules_file.write_text(text, encoding="utf-8")
+    actions.generate_scene(path)
+    rules_file.write_text(text.replace("split = false", "split = true"), encoding="utf-8")
+    before = _files(tmp_path)
+
+    def broken(*_: object) -> Path:
+        raise SceneError("disk full")
+
+    monkeypatch.setattr(rendering, "write_world_preview", broken)
+    with pytest.raises(SceneError, match="disk full"):
+        actions.generate_scene(path)
+    assert _files(tmp_path) == before
+    assert not (tmp_path / "placement").exists()
+
+
+def test_example_old_style_rules_keep_their_record_digests() -> None:
+    """相容（D-014）：沒用到新寫法的規則檔，生成紀錄裡每個元素與傳送點的 digest 跟以前一樣。
+
+    不一樣的話，升級之後重新生成會把每個元素都報成「位置或欄位變了」。
+    """
+    data = Path(__file__).parent / "data"
+    pinned: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+        "village_house": (
+            {
+                "house_1": "ddc1d7973cb03b23",
+                "oak_1": "8d659979dd125788",
+                "plaza": "2c30f51fb2b2e744",
+                "room": "9822164755940c7d",
+            },
+            {"house_1_door": "a2fba13c787875aa"},
+        ),
+        "village_terrain": (
+            {
+                "hill": "2aea673eed39ffbb",
+                "house_1": "2f08648f090ed7c0",
+                "oak_1": "8d659979dd125788",
+                "oak_2": "78a084901d38ed4e",
+                "plaza": "2c30f51fb2b2e744",
+                "pond": "ced647363ccf879c",
+                "ramp": "eabca16f5b03ef57",
+                "spawn": "fdb96ec8f95aed0d",
+            },
+            {},
+        ),
+    }
+    for name, (elements, portals) in pinned.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "village.ldtk"
+            shutil.copy(data / f"{name}.rules.toml", record.rules_path(path))
+            actions.generate_scene(path)
+            saved = record.read_record(path)
+            assert saved is not None
+            assert (saved["elements"], saved["portals"]) == (elements, portals), name

@@ -113,14 +113,13 @@ def layout(rules: Rules) -> Layout:
 
     taken: dict[tuple[str, Cell], str] = {}
 
-    def spot_of(
-        label: str, at: str | Cell | FixedEnd, level: str | None, size: Cell = (1, 1)
-    ) -> tuple[str, Cell]:
+    def spot_of(label: str, at: str | Cell | FixedEnd, level: str | None) -> tuple[str, Cell]:
         """錨點（或固定的格、固定端點）換成（level, 左上角的格），並佔下它的每一格。
 
         `level` 是 entity 所在的 level：錨點要在同一個 level；傳送點給 None，兩端可以跨 level。
-        固定端點自己帶 level 與大小（`size`），佔下整個矩形（D-014）。
+        固定端點自己帶 level 與大小，佔下整個矩形（D-014）。
         """
+        size = at.size if isinstance(at, FixedEnd) else (1, 1)
         if isinstance(at, FixedEnd):
             check_fixed_end(rules, label, at)
             spot = (rules.end_level(at, label).name, at.at)
@@ -168,16 +167,19 @@ def layout(rules: Rules) -> Layout:
     portals: dict[str, tuple[tuple[str, Cell], tuple[str, Cell]]] = {}
     portal_sizes: dict[str, tuple[Cell, Cell]] = {}
     for portal in rules.portals:
-        first = portal.start.size if isinstance(portal.start, FixedEnd) else (1, 1)
-        second = portal.to.size if isinstance(portal.to, FixedEnd) else (1, 1)
-        start = spot_of(f"{portal.name}.from", portal.start, None, first)
-        end = spot_of(f"{portal.name}.to", portal.to, None, second)
+        start = spot_of(f"{portal.name}.from", portal.start, None)
+        end = spot_of(f"{portal.name}.to", portal.to, None)
         portals[portal.name] = (start, end)
-        portal_sizes[portal.name] = (first, second)
+        portal_sizes[portal.name] = (_end_size(portal.start), _end_size(portal.to))
 
     return Layout(
         cells, anchors, entities, pushed_by, levels, level_of, portals, parts, portal_sizes
     )
+
+
+def _end_size(end: str | FixedEnd) -> Cell:
+    """傳送點一端佔幾格（寬, 高）：錨點是一格，固定端點照寫的大小。"""
+    return end.size if isinstance(end, FixedEnd) else (1, 1)
 
 
 def place_levels(rules: Rules) -> dict[str, Rect]:

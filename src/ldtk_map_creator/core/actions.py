@@ -133,9 +133,13 @@ def _commit(
     }
     folder = target.path.parent / target.path.stem
     names = {lv["identifier"] for lv in levels}
-    # 單檔存時 save_scene 會刪掉子資料夾裡所有 .ldtkl（原本拆開存、現在改單檔），都要能還原
+    # 單檔存時 save_scene 會刪掉子資料夾裡所有 .ldtkl（原本拆開存、現在改單檔）；
+    # 拆開存時會補寫磁碟上還沒有的 .ldtkl（原本單檔、現在改拆開）：兩種都要能還原
     stale = {p for p in folder.glob("*.ldtkl") if p.stem not in names or not target.split}
+    fresh = {folder / f"{n}.ldtkl" for n in names} if target.split else set[Path]()
     touched = {target.path, *stale, *(folder / f"{lv}.ldtkl" for lv in changed)}
+    touched |= {p for p in fresh if not p.exists()}
+    folder_existed = folder.is_dir()
     touched |= {rendering.preview_path(target, lv) for lv in redraw} | extra.keys() | remove
     # 世界總覽（D-002）：重新生成、有 level 變了、level 的組成或位置變了、或還沒畫過才重畫
     world_path = rendering.world_preview_path(target)
@@ -166,6 +170,9 @@ def _commit(
             old.unlink(missing_ok=True)
     except BaseException:
         _restore(saved)
+        if not folder_existed:  # 這次才建的子資料夾，檔都還原了就一起收掉
+            with contextlib.suppress(OSError):
+                folder.rmdir()
         raise
     return ActionResult(summary, previews, iid)
 
@@ -456,7 +463,8 @@ def generate_scene(path: Path, *, force: bool = False) -> ActionResult:
     """照 `<名>.rules.toml` 生成場景地圖（D-007、D-008）。
 
     已經有這個場景地圖時是重新生成：先跟上次生成的紀錄比對，被直接改過就拒絕並列出差異；
-    `force=True` 才蓋掉。存法沿用既有的場景地圖，新建時拆開存。
+    `force=True` 才蓋掉。存法：規則檔頂層有 `split` 就照它（D-014），沒有就沿用既有的場景地圖，
+    新建時拆開存。
     """
     rules = load_rules(record.rules_path(path))
     # 地圖不在就沒有東西要保護，也不拿殘留的紀錄來比

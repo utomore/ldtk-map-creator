@@ -1,20 +1,25 @@
 """GEN-10～GEN-12：entity 與傳送點指定位置與大小、分層慣例 entity 改顏色與 tags（D-014）。"""
 
 import dataclasses
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from ldtk_map_creator.core.check import check_scene
 from ldtk_map_creator.core.errors import SceneError
 from ldtk_map_creator.core.generate import element_iid, generate_scene, portal_iids
 from ldtk_map_creator.core.layout import Layout, layout
 from ldtk_map_creator.core.rules import (
+    AreaRule,
+    ConventionOverride,
     EntityRule,
     FixedEnd,
+    Kind,
     PortalRule,
     Rules,
     load_rules,
@@ -172,12 +177,18 @@ def test_example_f1_each_house_has_its_own_size(tmp_path: Path) -> None:
 
 
 def test_example_f2_spawn_sits_inside_its_cell(tmp_path: Path) -> None:
-    """F2：出生點在 (4, 3) 那一格往右 48、往下 72，px 是 (432, 360)，仍算在那一格。"""
+    """F2：出生點在 (4, 3) 那一格往右 48、往下 72，px 是 (432, 360)，仍算在那一格；8×8 的也一樣。"""
     r = load_rules(EXAMPLE)
     scene, _ = generate_scene(r, tmp_path / "scene.ldtk")
-    _, spawn = _instances(scene)[element_iid(r.seed, "spawn")]
+    found = _instances(scene)
+    _, spawn = found[element_iid(r.seed, "spawn")]
     assert spawn["px"] == [432, 360] and spawn["__grid"] == [4, 3]
     assert (spawn["width"], spawn["height"]) == (96, 96)
+    # 比一格小的實例：宣告像素大小的類型（8×8），再用 offset 擺進 (6, 5) 那一格
+    _, scout = found[element_iid(r.seed, "scout")]
+    assert scout["px"] == [6 * 96 + 48, 5 * 96 + 72] and scout["__grid"] == [6, 5]
+    assert (scout["width"], scout["height"]) == (8, 8)
+    assert scout["__tags"] == ["player"]
 
 
 def test_example_f3_portal_ends_are_bands(tmp_path: Path) -> None:
@@ -235,14 +246,6 @@ def test_example_overrides_do_not_touch_other_definitions(tmp_path: Path) -> Non
         return [d for d in scene.project["defs"]["entities"] if d["identifier"] in untouched]
 
     assert defs(a) == defs(b)
-
-
-def test_example_unsized_entities_keep_the_template_definition(tmp_path: Path) -> None:
-    """邊界：沒有實例大小不同的定義，不改成可縮放（沒用到新寫法的規則，定義跟以前一樣）。"""
-    r = load_rules(EXAMPLE)
-    plain = dataclasses.replace(r, entities=r.entities[:1], portals=())
-    scene, _ = generate_scene(plain, tmp_path / "scene.ldtk")
-    assert not any(d["resizableX"] or d["resizableY"] for d in scene.project["defs"]["entities"])
 
 
 @pytest.mark.parametrize(
@@ -320,3 +323,112 @@ def test_example_fixed_end_may_sit_on_areas() -> None:
     floor = placed.cells["home_floor"]
     cell = placed.portals["home_door"][0][1]
     assert cell in floor  # home_door 的 Home 那端落在地板區域上
+
+
+def test_example_fixed_end_collides_with_an_area_part() -> None:
+    """邊界（GEN-3）：端點的矩形蓋到帶零件區域的中心（零件的格），報在端點。"""
+    r = load_rules(EXAMPLE)
+    kinds = (*r.kinds, Kind("shrine", ground="dirt", part="shrine"))
+    shrine = AreaRule("shrine_a", "shrine", (3, 3), at=(30, 3), level="Farm")  # 中心 (31, 4)
+    door = PortalRule("door", FixedEnd("Farm", (30, 4), (3, 1)), FixedEnd("Home", (0, 0)))
+    r = dataclasses.replace(r, kinds=kinds, areas=(*r.areas, shrine), portals=(door,))
+    with pytest.raises(SceneError, match=r"^door\.from：跟「shrine_a 的零件」擺在同一格 \(31, 4\)"):
+        layout(r)
+
+
+@pytest.mark.parametrize(
+    ("what", "where"),
+    [
+        ("offset_negative", r"^spawn\.offset：要小於格子大小 96"),
+        ("offset_too_big", r"^spawn\.offset：要小於格子大小 96"),
+        ("size_zero", r"^spawn\.size：至少是 1"),
+        ("end_size_zero", r"^door\.from\.size：至少是 1"),
+        ("end_negative", r"^door\.from\.at：不能是負的"),
+        ("override_without_player", r"^entity_types\.PlayerSpawn\.tags："),
+        ("override_bad_color", r"^entity_types\.Teleport\.color："),
+        ("override_empty", r"^entity_types\.Part："),
+    ],
+)
+def test_example_unparsed_placement_mistakes_are_scene_errors(what: str, where: str) -> None:
+    """邊界：沒經過規則檔檢查、直接組出來的規則寫錯，生成也丟 SceneError，不悄悄生成錯的地圖。"""
+    r = load_rules(EXAMPLE)
+    spawn = r.entities[0]
+    if what == "offset_negative":
+        r = dataclasses.replace(r, entities=(dataclasses.replace(spawn, offset=(-1, 0)),))
+    elif what == "offset_too_big":
+        r = dataclasses.replace(r, entities=(dataclasses.replace(spawn, offset=(0, 200)),))
+    elif what == "size_zero":
+        r = dataclasses.replace(r, entities=(dataclasses.replace(spawn, size=(0, 1)),))
+    elif what == "end_size_zero":
+        door = PortalRule("door", FixedEnd("Home", (0, 0), (0, 1)), FixedEnd("Farm", (0, 10)))
+        r = dataclasses.replace(r, portals=(door,))
+    elif what == "end_negative":
+        door = PortalRule("door", FixedEnd("Home", (-1, 0)), FixedEnd("Farm", (0, 10)))
+        r = dataclasses.replace(r, portals=(door,))
+    elif what == "override_without_player":
+        r = dataclasses.replace(r, overrides=(ConventionOverride("PlayerSpawn", None, ()),))
+    elif what == "override_bad_color":
+        r = dataclasses.replace(r, overrides=(ConventionOverride("Teleport", "red"),))
+    else:
+        r = dataclasses.replace(r, overrides=(ConventionOverride("Part"),))
+    with tempfile.TemporaryDirectory() as tmp, pytest.raises(SceneError, match=where):
+        generate_scene(r, Path(tmp) / "scene.ldtk")
+        pytest.fail("generate_scene 沒有丟錯")
+
+
+@st.composite
+def broken_layout(draw: st.DrawFn) -> tuple[Rules, str]:
+    """排得下的規則弄壞一處（位置與大小的衝突）；回傳弄壞的規則，與訊息開頭該有的位置。"""
+    good = draw(placement_rules().filter(lambda r: bool(r.entities)))
+    placed = layout(good)
+    many = len(good.levels) > 1
+
+    def end_at(level: str, cell: tuple[int, int]) -> FixedEnd:
+        return FixedEnd(level if many else None, cell)
+
+    options = ["rect_out", "end_out", "end_on_entity"]
+    if good.portals:
+        options.append("end_on_end")
+    match draw(st.sampled_from(options)):
+        case "rect_out":
+            # 實體往右拉到超出 level：大小比 level 還大報在 size，否則報在 at
+            entity = draw(st.sampled_from(good.entities))
+            width = next(
+                lv.size[0] for lv in good.levels if lv.name == placed.level_of[entity.name]
+            )
+            size = (width - placed.entities[entity.name][0] + 1, 1)
+            bad = dataclasses.replace(entity, size=size, offset=(0, 0))
+            entities = tuple(bad if e is entity else e for e in good.entities)
+            field = "size" if size[0] > width else "at"
+            return dataclasses.replace(good, entities=entities), f"{entity.name}.{field}"
+        case "end_out":
+            level = draw(st.sampled_from(good.levels))
+            portal = PortalRule("zz_out", end_at(level.name, (level.size[0], 0)), "nowhere")
+            return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_out.from.at"
+        case "end_on_entity":
+            # 新的傳送點的端點蓋住一個 entity 的左上角那一格：entity 先擺，報在後擺的端點
+            entity = draw(st.sampled_from(good.entities))
+            end = end_at(placed.level_of[entity.name], placed.entities[entity.name])
+            portal = PortalRule("zz_hit", end, end)
+            return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_hit.from"
+        case _:
+            # 新的傳送點的端點蓋住別的端點的左上角那一格：先擺的先佔，報在後擺的端點
+            existing = draw(st.sampled_from(good.portals))
+            level, cell = placed.portals[existing.name][0]
+            end = end_at(level, cell)
+            portal = PortalRule("zz_over", end, end)
+            return dataclasses.replace(good, portals=(*good.portals, portal)), "zz_over.from"
+
+
+@pytest.mark.law("GEN-3")
+@FAST
+@given(broken_layout())
+def test_gen_3_placement_failures_name_the_element(case: tuple[Rules, str]) -> None:
+    """D-014 的衝突：矩形出界、端點出界、端點撞到 entity 或別的端點，訊息開頭是出錯的元素與欄位。"""
+    r, where = case
+    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+        layout(r)
+    with tempfile.TemporaryDirectory() as tmp:
+        with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+            generate_scene(r, Path(tmp) / "scene.ldtk")
+        assert list(Path(tmp).iterdir()) == []  # 丟錯時還沒寫任何檔

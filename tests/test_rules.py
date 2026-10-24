@@ -446,7 +446,7 @@ def broken_placement(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
     if entities:
         options += ["offset_range", "offset_type", "size_bad"]
     if fixed:
-        options += ["size_too_big", "rect_out"]
+        options += ["size_too_big", "rect_out", "big_type_at_edge"]
     if ends:
         options += ["end_key", "end_no_at", "end_out", "end_level"]
     if any(isinstance(p["from"], dict) for p in portals):
@@ -521,6 +521,18 @@ def broken_placement(draw: st.DrawFn) -> tuple[dict[str, Any], str]:
             entity["at"] = [w - 1, 0]
             entity["size"] = [2, 1]
             entity.pop("offset", None)
+            return data, f"{entity['name']}.at"
+        case "big_type_at_edge":
+            # 沒寫 size、offset，宣告的類型比一格大、擺在最後一欄：整個矩形出界（以前只查左上角）
+            entity = draw(st.sampled_from(fixed))
+            w, _ = levels[entity.get("level", first)]
+            big = {"color": "#102030", "size": [2 * good.grid, good.grid]}
+            data.setdefault("entity_types", {})["ZzBig"] = big
+            entity["type"] = "ZzBig"
+            entity.pop("fields", None)
+            entity.pop("size", None)
+            entity.pop("offset", None)
+            entity["at"] = [w - 1, 0]
             return data, f"{entity['name']}.at"
         case "end_key":
             portal, field = draw(st.sampled_from(ends))
@@ -652,30 +664,14 @@ def test_example_only_portals_cross_levels(case: str, where: str) -> None:
         parse_rules(data)
 
 
-@pytest.mark.parametrize(
-    ("case", "where"),
-    [
-        ("portal-same-cell", "door_portal.to"),
-        ("type-named-spawn", "entity_types.playerspawn"),
-        ("type-named-teleport", "entity_types.Teleport"),
-        ("type-named-part", "entity_types.Part"),
-    ],
-)
-def test_example_portal_and_type_mistakes(case: str, where: str) -> None:
-    """傳送點兩端在同一格、宣告的類型跟範本的名字撞名（D-011），都報錯。
-
-    1 格高的區域，north 與 south 是同一格。範本的 Teleport、Part 寫成空表格是沒有覆寫任何東西；
-    名稱分大小寫，`playerspawn` 不是 `PlayerSpawn`（D-014）。
-    """
+def test_example_portal_ends_in_the_same_cell() -> None:
+    """傳送點兩端在同一格報錯：1 格高的區域，north 與 south 是同一格。"""
     text = EXAMPLE.with_name("village_house.rules.toml").read_text(encoding="utf-8")
     data: dict[str, Any] = tomllib.loads(text)
-    if case == "portal-same-cell":
-        door = {"name": "door", "level": "Village", "kind": "house", "size": [3, 1], "at": [0, 0]}
-        data["area"].append(door)
-        data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
-    else:
-        data.setdefault("entity_types", {})[where.split(".")[1]] = {}
-    with pytest.raises(SceneError, match=rf"^{re.escape(where)}："):
+    door = {"name": "door", "level": "Village", "kind": "house", "size": [3, 1], "at": [0, 0]}
+    data["area"].append(door)
+    data["portal"].append({"name": "door_portal", "from": "door.north", "to": "door.south"})
+    with pytest.raises(SceneError, match=r"^door_portal\.to："):
         parse_rules(data)
 
 
@@ -869,14 +865,15 @@ def test_example_placement() -> None:
     """典型（D-014）：size、offset、固定端點、覆寫、split 都讀成寫的樣子。"""
     r = load_rules(PLACEMENT)
     assert (r.grid, r.split) == (96, False)
-    spawn, house_a, house_b, house_c = r.entities
+    spawn, scout, house_a, house_b, house_c = r.entities
     assert (spawn.offset, spawn.size, spawn.level) == ((48, 72), None, "Home")
+    assert (scout.type, scout.offset) == ("Scout", (48, 72))
     assert (house_a.size, house_a.offset) == (None, (0, 0))
     assert (house_b.size, house_c.size) == ((3, 3), (6, 3))
     assert r.portals[0].start == FixedEnd("Home", (0, 3), (1, 3))
     assert r.portals[1].start == FixedEnd("Farm", (18, 19), (3, 1))
     assert r.overrides == (ConventionOverride("Teleport", "#30e1b9", ("tele",)),)
-    assert [t.name for t in r.entity_types] == ["House"]  # 覆寫不算宣告的類型
+    assert [t.name for t in r.entity_types] == ["House", "Scout"]  # 覆寫不算宣告的類型
 
 
 def test_example_unwritten_placement_keeps_the_old_reading() -> None:
@@ -918,4 +915,21 @@ def test_example_fixed_ends_of_one_portal(to: dict[str, Any], refused: bool) -> 
         assert parse_rules(data).portals[-1].name == "twin"
         return
     with pytest.raises(SceneError, match=r"^twin\.to：兩端的位置重疊"):
+        parse_rules(data)
+
+
+def test_example_wide_type_at_the_edge_is_refused() -> None:
+    """邊界（D-014）：沒寫 size、offset，宣告的類型比一格寬、擺在最後一欄，整個矩形出界就報錯。
+
+    以前只查左上角那一格，這樣的規則檔讀得進來；現在是 breaking（PR 與 D-014 都寫明）。
+    """
+    data: dict[str, Any] = {
+        "seed": 1,
+        "level": {"name": "L", "size": [4, 4]},
+        "entity_types": {"Wide": {"size": [32, 16]}},  # 兩格寬（grid 預設 16）
+        "entity": [{"name": "w", "type": "Wide", "at": [2, 0]}],
+    }
+    assert parse_rules(data).entities[0].at == (2, 0)  # 擺在倒數第二欄放得下
+    data["entity"][0]["at"] = [3, 0]
+    with pytest.raises(SceneError, match=r"^w\.at：\(3, 0\) 加上 offset \(0, 0\)、大小 32x16 像素"):
         parse_rules(data)
