@@ -496,6 +496,8 @@ def test_example_portal_with_type_is_refused() -> None:
         ("Teleport", {"targetPort": "x"}, "oak.fields.targetPort"),  # 指向用 [[portal]]
         ("Marker", {"count": 1, "ok": False, "ratio": 2, "note": "n"}, None),
         ("Marker", {"count": 1.5}, "oak.fields.count"),  # Int 不收小數
+        ("Marker", {"count": 2**31}, "oak.fields.count"),  # LDtk 的 Int 是 32 位元
+        ("Typo", {"when": [1]}, "oak.fields.when"),  # 類型不存在也要是純量
         ("Marker", {"ok": 1}, "oak.fields.ok"),  # Bool 不收整數
         ("Marker", {"link": "x"}, "oak.fields.link"),
     ],

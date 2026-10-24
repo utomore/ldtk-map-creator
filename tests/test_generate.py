@@ -584,10 +584,10 @@ def test_example_part_fields_written_and_defaults_kept(tmp_path: Path) -> None:
 
 
 def test_example_entity_fields_refused_by_definition_name_the_element(tmp_path: Path) -> None:
-    """直接組出來、沒經過規則檔檢查的欄位值被定義擋下（欄位不存在）：訊息開頭是 <元素>.type。"""
+    """沒經過規則檔檢查的欄位值被擋下（欄位不存在）：訊息開頭是 <元素>.fields.<欄位>。"""
     r = load_rules(EXAMPLE)
     bad = EntityRule("oak", "Part", "plaza.center", fields=(("nope", 1),))
-    with pytest.raises(SceneError, match=r"^oak\.type：.*nope"):
+    with pytest.raises(SceneError, match=r"^oak\.fields\.nope："):
         generate_scene(dataclasses.replace(r, entities=(bad,)), tmp_path / "scene.ldtk")
 
 

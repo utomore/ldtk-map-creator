@@ -1,10 +1,10 @@
 """讀規則檔，檢查之後轉成規則資料（D-007、D-009、D-010、D-011）。
 
 規則檔寫錯一律丟 SceneError，訊息開頭是出錯的位置，例如 `house_2.size`、`level.House1.near`。
-這裡只看規則檔本身；entity 的 type 是不是範本裡的定義，要等生成時對照場景地圖。
+除了規則檔本身，也對照範本：`[[entity]]` 的欄位照範本或宣告的定義查，分層慣例的 entity
+（Teleport、Part）擺得合不合慣例（D-011）；type 不存在的錯，要等生成時對照場景地圖才報。
 """
 
-import math
 import re
 import tomllib
 from collections.abc import Callable
@@ -363,6 +363,10 @@ def _field_values(
     declared = next((t for t in types if t.name == entity_type), None)
     defined = dict(declared.fields) if declared else template.entity_field_types(entity_type)
     if defined is None:
+        # 類型不存在的錯留給生成報；值至少要是欄位能存的四種純量，記錄與寫檔才不會壞
+        for field, value in table.items():
+            if not isinstance(value, bool | int | float | str):
+                raise SceneError(f"{owner}.fields.{field}：要是整數、小數、布林或字串：{value!r}")
         return tuple(table.items())
     found: list[tuple[str, object]] = []
     for field, value in table.items():
@@ -373,10 +377,10 @@ def _field_values(
             raise SceneError(f"{where}：{entity_type} 沒有這個欄位（有：{have}）")
         if kind == "EntityRef":
             raise SceneError(f"{where}：EntityRef 欄位不能寫在 fields 裡，傳送點用 [[portal]]")
-        number = kind in ("Int", "Float") and value_fits(kind, value)
-        if not value_fits(kind, value) or (number and not math.isfinite(cast(float, value))):
+        if not value_fits(kind, value):
             raise SceneError(f"{where}：要是 {kind}：{value!r}")
-        found.append((field, value))
+        # Float 統一存成小數：90 跟 90.0 是同一個值，寫出的檔與生成紀錄都一樣
+        found.append((field, float(cast(float, value)) if kind == "Float" else value))
     return tuple(found)
 
 

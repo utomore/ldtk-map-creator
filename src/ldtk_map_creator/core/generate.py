@@ -166,11 +166,21 @@ def _entity_count(scene: SceneMap) -> int:
 def _place_rule_entity(
     scene: SceneMap, level: str, entity: EntityRule, cell: tuple[int, int], iid: str
 ) -> None:
-    """擺規則檔的 `[[entity]]`，帶上它寫的欄位值；錯誤開頭是 `<元素>.type`。
+    """擺規則檔的 `[[entity]]`，帶上它寫的欄位值。
 
-    欄位的名稱與型別讀規則檔時就查過（RULE-2），生成的定義沒有範圍限制，
-    所以擺不下的原因出在類型本身（不存在、數量上限）。
+    欄位不存在或型別不對的錯開頭是 `<元素>.fields.<欄位>`；
+    其餘（類型不存在、數量上限）是 `<元素>.type`。
     """
+    edef = next(
+        (d for d in scene.project["defs"]["entities"] if d["identifier"] == entity.type), None
+    )
+    if edef is not None:
+        defined = {f["identifier"]: f["__type"] for f in edef["fieldDefs"]}
+        for field, value in entity.fields:
+            kind = defined.get(field)
+            if kind is None or kind == "EntityRef" or not fields.value_fits(kind, value):
+                where = f"{entity.name}.fields.{field}"
+                raise SceneError(f"{where}：{entity.type} 沒有這個欄位，或值的型別不對：{value!r}")
     _place(scene, level, entity.type, cell, iid, f"{entity.name}.type", dict(entity.fields))
 
 
